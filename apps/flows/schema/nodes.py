@@ -443,6 +443,70 @@ for _verb_name, _verb_schema in (
             ["member_ids", "via", "text"],
         ),
     ),
+    (
+        "ai_generate_reply",
+        _verb(
+            "ai_generate_reply",
+            {
+                "prompt": f.string(min_length=1, max_length=4096, description="Prompt for AI. Can use {{placeholders}} like {{contact.name}}."),
+                "system_prompt": f.string(max_length=2048, description="System persona or context for the AI reply."),
+                "target_field": f.string(min_length=1, max_length=100, description="Custom field where the AI reply will be stored."),
+                "provider": f.enum("gemini", "openai", "groq", "ollama", description="AI Provider (default: gemini)."),
+                "model": f.string(max_length=100, description="Optional model override (e.g. gemini-1.5-flash, gpt-4o-mini)."),
+                "api_key": f.string(max_length=500, description="Optional API key override."),
+            },
+            ["prompt", "target_field"],
+        ),
+    ),
+    (
+        "ai_classify_intent",
+        _verb(
+            "ai_classify_intent",
+            {
+                "user_text": f.string(min_length=1, max_length=4096, description="User message to classify (e.g. {{contact.last_message}})."),
+                "intents": f.array(f.string(min_length=1, max_length=64), min_items=2, max_items=20, description="List of possible categories."),
+                "target_field": f.string(min_length=1, max_length=100, description="Custom field where classified intent will be stored."),
+                "provider": f.enum("gemini", "openai", "groq", "ollama", description="AI Provider (default: gemini)."),
+                "api_key": f.string(max_length=500, description="Optional API key override."),
+            },
+            ["user_text", "intents", "target_field"],
+        ),
+    ),
+    (
+        "append_google_sheet",
+        _verb(
+            "append_google_sheet",
+            {
+                "webhook_url": f.string(min_length=1, max_length=2048, description="Google Apps Script Webhook or Zapier/Make URL."),
+                "extra_data": f.string(max_length=2048, description="Optional extra data or custom mapping."),
+            },
+            ["webhook_url"],
+        ),
+    ),
+    (
+        "assign_round_robin",
+        _verb(
+            "assign_round_robin",
+            {
+                "roles": f.array(f.enum("owner", "admin", "agent"), max_items=3, description="Member roles eligible for assignment."),
+            },
+            [],
+        ),
+    ),
+    (
+        "check_business_hours",
+        _verb(
+            "check_business_hours",
+            {
+                "start_time": f.string(pattern=r"^\d{2}:\d{2}$", description="Opening time in HH:MM format (e.g. 09:00)."),
+                "end_time": f.string(pattern=r"^\d{2}:\d{2}$", description="Closing time in HH:MM format (e.g. 18:00)."),
+                "timezone": f.string(max_length=100, description="Timezone name e.g. 'Asia/Kolkata' or 'UTC'."),
+                "active_days": f.array(f.enum("mon", "tue", "wed", "thu", "fri", "sat", "sun"), min_items=1, max_items=7, description="Working days of the week."),
+                "target_field": f.string(min_length=1, max_length=100, description="Custom field to store true or false."),
+            },
+            ["start_time", "end_time", "target_field"],
+        ),
+    ),
 ):
     register_action_verb(_verb_name, f"action_{_verb_name}", _verb_schema)
 

@@ -52,6 +52,11 @@ class TestRegistry:
             "close_conversation",
             "assign_conversation",
             "notify_members",
+            "ai_generate_reply",
+            "ai_classify_intent",
+            "append_google_sheet",
+            "assign_round_robin",
+            "check_business_hours",
         }
 
     def test_registering_a_type_twice_is_an_error(self):

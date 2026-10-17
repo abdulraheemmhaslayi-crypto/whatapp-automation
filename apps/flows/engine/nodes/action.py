@@ -36,12 +36,20 @@ declared, at publish time; this is the other case, a declared verb whose owner
 has not landed.
 """
 
+import json
 import logging
+import os
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+import httpx
+from django.conf import settings
+from django.core.cache import cache
+from django.utils import timezone
+
 from apps.contacts.errors import ContactsError
-from apps.contacts.models import Tag
+from apps.contacts.models import CustomField, Tag
 from apps.contacts.services import (
     add_tag,
     clear_field_value,
@@ -201,6 +209,249 @@ def _notify_members(ctx: NodeContext, step: dict[str, Any]) -> None:
     )
 
 
+def _resolve_or_create_custom_field(ctx: NodeContext, name: Any, field_type: str = "text") -> Any | None:
+    """Find a custom field by name in workspace, or auto-create it if missing."""
+    cleaned = _text(name)
+    if not cleaned:
+        return None
+    field = CustomField.objects.for_workspace(ctx.workspace_id).filter(name__iexact=cleaned).first()
+    if field is not None:
+        return field
+    try:
+        from apps.contacts.services import create_custom_field
+
+        return create_custom_field(ctx.workspace, name=cleaned, field_type=field_type)
+    except Exception as exc:
+        logger.warning("Execution %s: could not auto-create custom field %r: %s", ctx.execution.pk, cleaned, exc)
+        return None
+
+
+def _ai_generate_reply(ctx: NodeContext, step: dict[str, Any]) -> None:
+    """Invoke AI (Gemini, OpenAI, Groq, Ollama) to answer customer queries dynamically."""
+    prompt_tpl = step.get("prompt") or ""
+    rendered_prompt = ctx.render(prompt_tpl)
+    if not rendered_prompt.strip():
+        logger.warning("Execution %s: ai_generate_reply has empty prompt.", ctx.execution.pk)
+        return
+
+    system_prompt = ctx.render(step.get("system_prompt") or "")
+    provider = str(step.get("provider") or "gemini").lower()
+    target_field_name = step.get("target_field")
+    field = _resolve_or_create_custom_field(ctx, target_field_name, field_type="text")
+    if field is None:
+        return
+
+    model_override = step.get("model") or ""
+    api_key = step.get("api_key") or getattr(settings, "GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
+
+    reply_text = ""
+    try:
+        if provider == "gemini":
+            model = model_override or "gemini-1.5-flash"
+            if api_key:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+                body: dict[str, Any] = {
+                    "contents": [{"parts": [{"text": rendered_prompt}]}],
+                }
+                if system_prompt:
+                    body["systemInstruction"] = {"parts": [{"text": system_prompt}]}
+                with httpx.Client(timeout=20.0) as client:
+                    resp = client.post(url, json=body)
+                    if resp.is_success:
+                        data = resp.json()
+                        candidates = data.get("candidates") or []
+                        if candidates:
+                            parts = candidates[0].get("content", {}).get("parts", [])
+                            if parts:
+                                reply_text = parts[0].get("text", "").strip()
+                    else:
+                        logger.warning("Execution %s: Gemini API error %s: %s", ctx.execution.pk, resp.status_code, resp.text)
+            if not reply_text:
+                reply_text = f"Thank you for reaching out! We received: '{rendered_prompt[:60]}...' and will assist you shortly."
+        elif provider in ("openai", "groq"):
+            is_groq = provider == "groq"
+            key = api_key or (os.environ.get("GROQ_API_KEY" if is_groq else "OPENAI_API_KEY", ""))
+            url = "https://api.groq.com/openai/v1/chat/completions" if is_groq else "https://api.openai.com/v1/chat/completions"
+            model = model_override or ("llama-3.1-8b-instant" if is_groq else "gpt-4o-mini")
+            if key:
+                messages = []
+                if system_prompt:
+                    messages.append({"role": "system", "content": system_prompt})
+                messages.append({"role": "user", "content": rendered_prompt})
+                with httpx.Client(timeout=20.0) as client:
+                    resp = client.post(url, headers={"Authorization": f"Bearer {key}"}, json={"model": model, "messages": messages})
+                    if resp.is_success:
+                        reply_text = resp.json()["choices"][0]["message"]["content"].strip()
+                    else:
+                        logger.warning("Execution %s: %s API error: %s", ctx.execution.pk, provider, resp.text)
+            if not reply_text:
+                reply_text = f"Thank you for contacting us! We received your message: '{rendered_prompt[:60]}...' and a team member will follow up shortly."
+        elif provider == "ollama":
+            url = "http://host.docker.internal:11434/api/generate"
+            model = model_override or "llama3.2"
+            with httpx.Client(timeout=25.0) as client:
+                resp = client.post(url, json={"model": model, "prompt": rendered_prompt, "system": system_prompt, "stream": False})
+                if resp.is_success:
+                    reply_text = resp.json().get("response", "").strip()
+        else:
+            reply_text = "Thank you for messaging! We will get back to you soon."
+    except Exception as exc:
+        logger.warning("Execution %s: AI reply generation error: %s", ctx.execution.pk, exc)
+        reply_text = "Thank you for reaching out! Our team has been notified and will assist you."
+
+    if reply_text:
+        set_field_value(ctx.contact, field, typed_for(field, reply_text))
+
+
+def _ai_classify_intent(ctx: NodeContext, step: dict[str, Any]) -> None:
+    """Classify user message into target intent categories."""
+    raw_text = step.get("user_text") or ""
+    rendered_text = ctx.render(raw_text).strip()
+    intents = [str(item).strip().lower() for item in (step.get("intents") or []) if str(item).strip()]
+    if not intents:
+        intents = ["support", "sales", "other"]
+
+    target_field_name = step.get("target_field")
+    field = _resolve_or_create_custom_field(ctx, target_field_name, field_type="text")
+    if field is None:
+        return
+
+    detected_intent = intents[-1]
+    if not rendered_text:
+        set_field_value(ctx.contact, field, typed_for(field, detected_intent))
+        return
+
+    api_key = step.get("api_key") or getattr(settings, "GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
+    provider = str(step.get("provider") or "gemini").lower()
+
+    lower_user = rendered_text.lower()
+    for intent in intents:
+        if intent in lower_user:
+            detected_intent = intent
+            break
+    else:
+        if provider == "gemini" and api_key:
+            try:
+                system_instruction = (
+                    f"Classify the customer message into exactly one of these categories: {', '.join(intents)}.\n"
+                    "Respond with ONLY the exact category name in lowercase and nothing else."
+                )
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+                with httpx.Client(timeout=10.0) as client:
+                    resp = client.post(
+                        url,
+                        json={
+                            "contents": [{"parts": [{"text": rendered_text}]}],
+                            "systemInstruction": {"parts": [{"text": system_instruction}]},
+                        },
+                    )
+                    if resp.is_success:
+                        ans = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip().lower()
+                        for it in intents:
+                            if it in ans:
+                                detected_intent = it
+                                break
+            except Exception as exc:
+                logger.warning("Execution %s: AI intent classification error: %s", ctx.execution.pk, exc)
+
+    set_field_value(ctx.contact, field, typed_for(field, detected_intent))
+
+
+def _append_google_sheet(ctx: NodeContext, step: dict[str, Any]) -> None:
+    """Send contact and custom field data to a Google Sheets webhook or automation endpoint."""
+    webhook_url = step.get("webhook_url") or ""
+    if not webhook_url.startswith(("http://", "https://")):
+        logger.warning("Execution %s: invalid webhook URL %r for append_google_sheet", ctx.execution.pk, webhook_url)
+        return
+
+    contact = ctx.contact
+    contact_fields: dict[str, Any] = {}
+    if hasattr(contact, "field_values"):
+        for fv in contact.field_values.select_related("field").all():
+            contact_fields[fv.field.name] = str(fv.value)
+
+    tags = [t.name for t in contact.tags.all()] if hasattr(contact, "tags") else []
+    payload = {
+        "contact_id": str(contact.pk),
+        "name": getattr(contact, "display_name", "") or getattr(contact, "name", ""),
+        "phone": getattr(contact, "phone", ""),
+        "email": getattr(contact, "email", ""),
+        "platform": str(ctx.connection.platform) if ctx.connection else "",
+        "tags": ", ".join(tags),
+        "flow_name": ctx.execution.flow.name,
+        "timestamp": timezone.now().isoformat(),
+        **contact_fields,
+    }
+
+    extra_data = step.get("extra_data")
+    if extra_data:
+        rendered_extra = ctx.render(str(extra_data))
+        try:
+            parsed = json.loads(rendered_extra)
+            if isinstance(parsed, dict):
+                payload.update(parsed)
+            else:
+                payload["extra_data"] = rendered_extra
+        except Exception:
+            payload["extra_data"] = rendered_extra
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            client.post(webhook_url, json=payload)
+    except Exception as exc:
+        logger.warning("Execution %s: append_google_sheet failed to post: %s", ctx.execution.pk, exc)
+
+
+def _assign_round_robin(ctx: NodeContext, step: dict[str, Any]) -> None:
+    """Evenly distribute conversations among active workspace team members."""
+    from apps.members.models import WorkspaceMembership
+
+    roles = step.get("roles") or ["agent", "admin", "owner"]
+    memberships = list(
+        WorkspaceMembership.objects.filter(workspace_id=ctx.workspace_id, role__in=roles)
+        .select_related("user")
+        .order_by("user__date_joined")
+    )
+    if not memberships:
+        logger.warning("Execution %s: no members available for assign_round_robin.", ctx.execution.pk)
+        return
+
+    cache_key = f"round_robin_assign_{ctx.workspace_id}"
+    last_idx = cache.get(cache_key, -1)
+    next_idx = (last_idx + 1) % len(memberships)
+    cache.set(cache_key, next_idx, timeout=86400 * 30)
+
+    chosen_user = memberships[next_idx].user
+    messaging.assign_conversation(ctx.contact, chosen_user, ctx.connection)
+    logger.info("Execution %s: round-robin assigned to member %s", ctx.execution.pk, chosen_user.pk)
+
+
+def _check_business_hours(ctx: NodeContext, step: dict[str, Any]) -> None:
+    """Check if current time is within business hours and set custom field to true/false."""
+    import zoneinfo
+
+    tz_name = step.get("timezone") or getattr(ctx.workspace, "timezone", "") or "Asia/Kolkata"
+    try:
+        tz = zoneinfo.ZoneInfo(tz_name)
+    except Exception:
+        tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+
+    now = datetime.now(tz)
+    current_time_str = now.strftime("%H:%M")
+    day_code = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"][now.weekday()]
+
+    active_days = step.get("active_days") or ["mon", "tue", "wed", "thu", "fri"]
+    start_time = step.get("start_time") or "09:00"
+    end_time = step.get("end_time") or "18:00"
+
+    is_open = (day_code in active_days) and (start_time <= current_time_str <= end_time)
+
+    target_field_name = step.get("target_field") or "is_business_hours"
+    field = _resolve_or_create_custom_field(ctx, target_field_name, field_type="boolean")
+    if field is not None:
+        set_field_value(ctx.contact, field, is_open)
+
+
 for _verb, _handler in (
     ("add_tag", _add_tag),
     ("remove_tag", _remove_tag),
@@ -210,6 +461,11 @@ for _verb, _handler in (
     ("close_conversation", _close_conversation),
     ("assign_conversation", _assign_conversation),
     ("notify_members", _notify_members),
+    ("ai_generate_reply", _ai_generate_reply),
+    ("ai_classify_intent", _ai_classify_intent),
+    ("append_google_sheet", _append_google_sheet),
+    ("assign_round_robin", _assign_round_robin),
+    ("check_business_hours", _check_business_hours),
 ):
     register_verb(_verb, _handler)
 

@@ -237,6 +237,9 @@ _VERB_SITES: dict[str, tuple[str, str, str]] = {
     "subscribe_sequence": ("sequence", KIND_SEQUENCE, ADDRESS_ID),
     "unsubscribe_sequence": ("sequence", KIND_SEQUENCE, ADDRESS_ID),
     "assign_conversation": ("member", KIND_MEMBER, ADDRESS_ID),
+    "ai_generate_reply": ("target_field", KIND_CUSTOM_FIELD, ADDRESS_NAME),
+    "ai_classify_intent": ("target_field", KIND_CUSTOM_FIELD, ADDRESS_NAME),
+    "check_business_hours": ("target_field", KIND_CUSTOM_FIELD, ADDRESS_NAME),
 }
 
 

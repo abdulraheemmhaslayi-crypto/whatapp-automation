@@ -79,6 +79,21 @@ export const LABELS: Record<string, string> = {
   id: "Id",
   datetime: "Date and time",
   date: "Date",
+  prompt: "Prompt",
+  system_prompt: "System Persona / Context",
+  target_field: "Save to Custom Field",
+  provider: "AI Provider",
+  model: "Model Name",
+  api_key: "API Key (Optional)",
+  user_text: "Message to Classify",
+  intents: "Categories / Intents",
+  webhook_url: "Webhook URL",
+  extra_data: "Custom Data / JSON",
+  roles: "Allowed Roles",
+  start_time: "Start Time (HH:MM)",
+  end_time: "End Time (HH:MM)",
+  timezone: "Timezone",
+  active_days: "Active Days",
 };
 
 /** `html_body` -> `Html body`, as a last resort. */
@@ -114,6 +129,11 @@ export const VARIANT_LABELS: Record<string, string> = {
   close_conversation: "Close the conversation",
   assign_conversation: "Assign the conversation",
   notify_members: "Notify members",
+  ai_generate_reply: "AI Smart Reply",
+  ai_classify_intent: "AI Intent Classifier",
+  append_google_sheet: "Sync to Google Sheets",
+  assign_round_robin: "Round-Robin Assignment",
+  check_business_hours: "Check Business Hours",
 };
 
 export function variantLabel(tag: string): string {

@@ -154,6 +154,11 @@ const VERB_COPY: Record<string, string> = {
   close_conversation: "Close conversation",
   assign_conversation: "Assign",
   notify_members: "Notify",
+  ai_generate_reply: "AI Reply",
+  ai_classify_intent: "AI Intent",
+  append_google_sheet: "Google Sheets",
+  assign_round_robin: "Round Robin",
+  check_business_hours: "Business Hours",
 };
 
 function ActionPreview({ config }: PreviewProps) {

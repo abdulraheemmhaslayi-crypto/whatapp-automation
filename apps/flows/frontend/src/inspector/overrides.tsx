@@ -88,6 +88,13 @@ export const OVERRIDES: Record<string, Widget> = {
   "$action_assign_conversation.member": MemberSelect,
   "$action_notify_members.member_ids": MemberMultiSelect,
   "$action_notify_members.text": PlaceholderInput,
+  "$action_ai_generate_reply.target_field": FieldSelect,
+  "$action_ai_generate_reply.prompt": PlaceholderInput,
+  "$action_ai_generate_reply.system_prompt": PlaceholderInput,
+  "$action_ai_classify_intent.user_text": PlaceholderInput,
+  "$action_ai_classify_intent.target_field": FieldSelect,
+  "$action_append_google_sheet.extra_data": PlaceholderInput,
+  "$action_check_business_hours.target_field": FieldSelect,
 };
 
 /** Node-type-scoped paths that want a placeholder-aware text box. */

@@ -19,6 +19,137 @@
       ],
       "type": "object"
     },
+    "action_ai_classify_intent": {
+      "additionalProperties": false,
+      "properties": {
+        "api_key": {
+          "description": "Optional API key override.",
+          "maxLength": 500,
+          "type": "string"
+        },
+        "intents": {
+          "description": "List of possible categories.",
+          "items": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "minItems": 2,
+          "type": "array"
+        },
+        "provider": {
+          "description": "AI Provider (default: gemini).",
+          "enum": [
+            "gemini",
+            "openai",
+            "groq",
+            "ollama"
+          ],
+          "type": "string"
+        },
+        "target_field": {
+          "description": "Custom field where classified intent will be stored.",
+          "maxLength": 100,
+          "minLength": 1,
+          "type": "string"
+        },
+        "user_text": {
+          "description": "User message to classify (e.g. {{contact.last_message}}).",
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "verb": {
+          "const": "ai_classify_intent",
+          "type": "string"
+        }
+      },
+      "required": [
+        "verb",
+        "user_text",
+        "intents",
+        "target_field"
+      ],
+      "type": "object"
+    },
+    "action_ai_generate_reply": {
+      "additionalProperties": false,
+      "properties": {
+        "api_key": {
+          "description": "Optional API key override.",
+          "maxLength": 500,
+          "type": "string"
+        },
+        "model": {
+          "description": "Optional model override (e.g. gemini-1.5-flash, gpt-4o-mini).",
+          "maxLength": 100,
+          "type": "string"
+        },
+        "prompt": {
+          "description": "Prompt for AI. Can use {{placeholders}} like {{contact.name}}.",
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "provider": {
+          "description": "AI Provider (default: gemini).",
+          "enum": [
+            "gemini",
+            "openai",
+            "groq",
+            "ollama"
+          ],
+          "type": "string"
+        },
+        "system_prompt": {
+          "description": "System persona or context for the AI reply.",
+          "maxLength": 2048,
+          "type": "string"
+        },
+        "target_field": {
+          "description": "Custom field where the AI reply will be stored.",
+          "maxLength": 100,
+          "minLength": 1,
+          "type": "string"
+        },
+        "verb": {
+          "const": "ai_generate_reply",
+          "type": "string"
+        }
+      },
+      "required": [
+        "verb",
+        "prompt",
+        "target_field"
+      ],
+      "type": "object"
+    },
+    "action_append_google_sheet": {
+      "additionalProperties": false,
+      "properties": {
+        "extra_data": {
+          "description": "Optional extra data or custom mapping.",
+          "maxLength": 2048,
+          "type": "string"
+        },
+        "verb": {
+          "const": "append_google_sheet",
+          "type": "string"
+        },
+        "webhook_url": {
+          "description": "Google Apps Script Webhook or Zapier/Make URL.",
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "verb",
+        "webhook_url"
+      ],
+      "type": "object"
+    },
     "action_assign_conversation": {
       "additionalProperties": false,
       "properties": {
@@ -35,6 +166,87 @@
       "required": [
         "verb",
         "member"
+      ],
+      "type": "object"
+    },
+    "action_assign_round_robin": {
+      "additionalProperties": false,
+      "properties": {
+        "roles": {
+          "description": "Member roles eligible for assignment.",
+          "items": {
+            "enum": [
+              "owner",
+              "admin",
+              "agent"
+            ],
+            "type": "string"
+          },
+          "maxItems": 3,
+          "type": "array"
+        },
+        "verb": {
+          "const": "assign_round_robin",
+          "type": "string"
+        }
+      },
+      "required": [
+        "verb"
+      ],
+      "type": "object"
+    },
+    "action_check_business_hours": {
+      "additionalProperties": false,
+      "properties": {
+        "active_days": {
+          "description": "Working days of the week.",
+          "items": {
+            "enum": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri",
+              "sat",
+              "sun"
+            ],
+            "type": "string"
+          },
+          "maxItems": 7,
+          "minItems": 1,
+          "type": "array"
+        },
+        "end_time": {
+          "description": "Closing time in HH:MM format (e.g. 18:00).",
+          "pattern": "^\\d{2}:\\d{2}$",
+          "type": "string"
+        },
+        "start_time": {
+          "description": "Opening time in HH:MM format (e.g. 09:00).",
+          "pattern": "^\\d{2}:\\d{2}$",
+          "type": "string"
+        },
+        "target_field": {
+          "description": "Custom field to store true or false.",
+          "maxLength": 100,
+          "minLength": 1,
+          "type": "string"
+        },
+        "timezone": {
+          "description": "Timezone name e.g. 'Asia/Kolkata' or 'UTC'.",
+          "maxLength": 100,
+          "type": "string"
+        },
+        "verb": {
+          "const": "check_business_hours",
+          "type": "string"
+        }
+      },
+      "required": [
+        "verb",
+        "start_time",
+        "end_time",
+        "target_field"
       ],
       "type": "object"
     },
@@ -169,7 +381,12 @@
       "discriminator": {
         "mapping": {
           "add_tag": "#/$defs/action_add_tag",
+          "ai_classify_intent": "#/$defs/action_ai_classify_intent",
+          "ai_generate_reply": "#/$defs/action_ai_generate_reply",
+          "append_google_sheet": "#/$defs/action_append_google_sheet",
           "assign_conversation": "#/$defs/action_assign_conversation",
+          "assign_round_robin": "#/$defs/action_assign_round_robin",
+          "check_business_hours": "#/$defs/action_check_business_hours",
           "clear_field": "#/$defs/action_clear_field",
           "close_conversation": "#/$defs/action_close_conversation",
           "notify_members": "#/$defs/action_notify_members",
@@ -211,6 +428,21 @@
         },
         {
           "$ref": "#/$defs/action_notify_members"
+        },
+        {
+          "$ref": "#/$defs/action_ai_generate_reply"
+        },
+        {
+          "$ref": "#/$defs/action_ai_classify_intent"
+        },
+        {
+          "$ref": "#/$defs/action_append_google_sheet"
+        },
+        {
+          "$ref": "#/$defs/action_assign_round_robin"
+        },
+        {
+          "$ref": "#/$defs/action_check_business_hours"
         }
       ],
       "type": "object"
@@ -2111,7 +2343,7 @@
     "nodes",
     "edges"
   ],
-  "title": "BrightBean Chat flow graph",
+  "title": "Quikro flow graph",
   "type": "object",
   "x-brightbean": {
     "groups": [
