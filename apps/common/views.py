@@ -1,4 +1,4 @@
-﻿"""Views owned by ``apps.common``: the health probe, the UI style guide, and
+"""Views owned by ``apps.common``: the health probe, the UI style guide, and
 the "coming soon" stubs behind the sidebar navigation.
 
 There is no landing page here. ``/`` is ``apps.accounts.views.root``, which
@@ -67,7 +67,7 @@ class _DemoWorkspace:
     """
 
     id: UUID = UUID(int=0)
-    name: str = "Quikro"
+    name: str = "Quikro Automation"
     icon: str = ""
 
 

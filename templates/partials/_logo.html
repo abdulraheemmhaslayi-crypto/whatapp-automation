@@ -1,4 +1,4 @@
-﻿{% load static %}{% comment %}
+{% load static %}{% comment %}
 The product/workspace mark. Renders the workspace icon when there is one, the
 workspace's initial when there is not, and the Quikro logo when there
 is no workspace at all (the anonymous and pre-tenancy case).
@@ -38,6 +38,6 @@ The size modifier is a class from the design system, not a Tailwind utility.
 {% elif workspace %}
 <div class="sidebar-logo-mark{% if px == "sm" %} sidebar-logo-mark-sm{% endif %}" aria-hidden="true">{{ workspace.name|make_list|first|upper }}</div>
 {% else %}
-<img src="{% static 'img/quikro-logo-small.webp' %}" alt="Quikro" class="sidebar-logo-mark{% if px == "sm" %} sidebar-logo-mark-sm{% endif %}">
+<img src="{% static 'img/quikro-automation-logo.png' %}" alt="Quikro Automation" class="sidebar-logo-mark rounded-lg object-contain{% if px == "sm" %} sidebar-logo-mark-sm{% endif %}">
 {% endif %}
 {% endwith %}

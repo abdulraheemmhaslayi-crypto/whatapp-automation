@@ -1,6 +1,6 @@
 {
-  "name": "BrightBean Chat",
-  "short_name": "Bean Chat",
+  "name": "Quikro Automation",
+  "short_name": "Quikro",
   "icons": [
     {
       "src": "web-app-manifest-192x192.png",
@@ -15,7 +15,7 @@
       "purpose": "maskable"
     }
   ],
-  "theme_color": "#ffda99",
+  "theme_color": "#7c3aed",
   "background_color": "#ffffff",
   "display": "standalone"
 }

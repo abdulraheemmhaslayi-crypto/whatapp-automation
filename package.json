@@ -1,5 +1,5 @@
 {
-  "name": "quikro",
+  "name": "quikro-automation",
   "private": true,
   "description": "Frontend toolchain: the Tailwind 4 build for apps/theme/static_src, the vendored runtime libraries in static/js, and the flow-builder React island in apps/flows/frontend.",
   "license": "AGPL-3.0-or-later",

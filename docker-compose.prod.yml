@@ -24,6 +24,8 @@
 # forgetting a second variable. Override ALLOWED_HOSTS or APP_URL individually
 # only when the deployment answers on more than one name.
 
+name: quikro-automation
+
 x-app-environment: &app-environment
   DJANGO_SETTINGS_MODULE: config.settings.production
   # Assembled from the parts below so the password exists in exactly one place.
@@ -57,7 +59,7 @@ x-app-service: &app-service
   # IMAGE_REPOSITORY exists for a fork that does publish one — set it to a
   # qualified name like ghcr.io/you/brightbean-chat and `pull` starts working,
   # with IMAGE_TAG selecting the release.
-  image: ${IMAGE_REPOSITORY:-brightbean-chat}:${IMAGE_TAG:-latest}
+  image: ${IMAGE_REPOSITORY:-quikro-automation}:${IMAGE_TAG:-latest}
   environment: *app-environment
   env_file:
     - path: .env

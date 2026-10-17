@@ -1,4 +1,4 @@
-﻿"""Base settings shared by every environment.
+"""Base settings shared by every environment.
 
 Layout, env handling and the storage switch follow BrightBean Studio's
 ``config/settings/base.py``. Differences from Studio are marked inline.
@@ -284,7 +284,7 @@ ACCOUNT_LOGIN_METHODS = {"email"}
 ACCOUNT_SIGNUP_FIELDS = ["email*", "password1*"]
 ACCOUNT_USER_MODEL_USERNAME_FIELD = None
 ACCOUNT_ADAPTER = "apps.accounts.adapters.AccountAdapter"
-ACCOUNT_EMAIL_SUBJECT_PREFIX = "[Quikro] "
+ACCOUNT_EMAIL_SUBJECT_PREFIX = "[Quikro Automation] "
 
 # "optional", not Studio's "none" and not "mandatory". A verification email goes
 # out at signup, and nothing is ever gated on it — so a self-hoster who has not

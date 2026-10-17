@@ -8,6 +8,8 @@
 # This is the dev-grade stack. The hardened production compose (gunicorn
 # tuning, Caddy, TLS) belongs to issue #28.
 
+name: quikro-automation
+
 x-app-environment: &app-environment
   DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-config.settings.development}
   # Deliberately NOT ${DATABASE_URL}. .env.example ships a host-local URL
@@ -51,7 +53,7 @@ services:
     build: .
     # Naming the image lets CI reuse one it already built instead of building
     # the same layers twice.
-    image: brightbean-chat:${IMAGE_TAG:-dev}
+    image: quikro-automation:${IMAGE_TAG:-dev}
     command: python manage.py migrate --noinput
     environment: *app-environment
     env_file:
@@ -63,7 +65,7 @@ services:
 
   app:
     build: .
-    image: brightbean-chat:${IMAGE_TAG:-dev}
+    image: quikro-automation:${IMAGE_TAG:-dev}
     ports:
       - "${APP_PORT:-8000}:8000"
     volumes:
@@ -89,7 +91,7 @@ services:
 
   worker:
     build: .
-    image: brightbean-chat:${IMAGE_TAG:-dev}
+    image: quikro-automation:${IMAGE_TAG:-dev}
     command: python manage.py process_tasks
     environment: *app-environment
     env_file:

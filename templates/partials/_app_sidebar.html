@@ -1,4 +1,4 @@
-﻿{% comment %}
+{% comment %}
 The sidebar — the product's whole chrome. There is no top header: the
 workspace switcher, the primary navigation, notifications and the account menu
 all live here.
@@ -118,10 +118,10 @@ the header gone there is one trigger, inside the panel's own wrapper, so the
         {% if sidebar_workspaces %}
         <button type="button" class="sidebar-ws-btn"
                 @click="wsOpen = !wsOpen"
-                title="Switch workspace (currently {{ current_workspace.name|default:'Quikro' }})"
+                title="Switch workspace (currently {{ current_workspace.name|default:'Quikro Automation' }})"
                 aria-haspopup="true" :aria-expanded="wsOpen ? 'true' : 'false'">
             {% include "partials/_logo.html" with workspace=current_workspace only %}
-            <span class="sidebar-ws-name">{{ current_workspace.name|default:"Quikro" }}</span>
+            <span class="sidebar-ws-name">{{ current_workspace.name|default:"Quikro Automation" }}</span>
             <svg class="sidebar-ws-chevron" :class="wsOpen && 'open'" width="16" height="16" fill="none"
                  stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round"
                  stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
@@ -188,9 +188,9 @@ the header gone there is one trigger, inside the panel's own wrapper, so the
           list is truthy, and it carries "New workspace" for anyone allowed to
           make a second.)
         {% endcomment %}
-        <div class="sidebar-ws-btn" title="{{ current_workspace.name|default:'Quikro' }}">
+        <div class="sidebar-ws-btn" title="{{ current_workspace.name|default:'Quikro Automation' }}">
             {% include "partials/_logo.html" with workspace=current_workspace only %}
-            <span class="sidebar-ws-name">{{ current_workspace.name|default:"Quikro" }}</span>
+            <span class="sidebar-ws-name">{{ current_workspace.name|default:"Quikro Automation" }}</span>
         </div>
         {% endif %}
     </div>

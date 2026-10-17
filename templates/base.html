@@ -3,7 +3,13 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}Quikro{% endblock %}</title>
+    <title>{% block title %}Quikro Automation{% endblock %}</title>
+    <meta name="description" content="Quikro Automation - High-performance multi-channel chat marketing & messaging automation platform.">
+    <meta property="og:title" content="{% block og_title %}Quikro Automation{% endblock %}">
+    <meta property="og:description" content="High-performance multi-channel chat marketing & messaging automation platform.">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="Quikro Automation">
+    <meta property="og:image" content="{% static 'img/quikro-automation-logo.png' %}">
 
     <link rel="icon" type="image/svg+xml" href="{% static 'favicon/favicon.svg' %}">
     <link rel="icon" type="image/png" sizes="96x96" href="{% static 'favicon/favicon-96x96.png' %}">

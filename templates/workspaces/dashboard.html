@@ -15,7 +15,7 @@ header now, on every page, which is where somebody looking for it actually
 goes.
 {% endcomment %}
 
-{% block title %}{{ request.workspace.name }} · Quikro{% endblock %}
+{% block title %}{{ request.workspace.name }} · Quikro Automation{% endblock %}
 
 {% block content %}
 <div class="w-full">
@@ -25,7 +25,7 @@ goes.
             <div class="flex items-center gap-2 mb-1.5">
                 <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold" style="background: var(--brand-50); color: var(--brand-600); border: 1px solid var(--brand-200);">
                     <span class="w-1.5 h-1.5 rounded-full animate-pulse" style="background: var(--brand-500);"></span>
-                    Quikro Workspace
+                    Quikro Automation
                 </span>
             </div>
             <h1 class="page-title text-2xl font-bold tracking-tight" style="color: var(--neutral-900);">{{ greeting }}, {{ request.user.display_name }}</h1>
