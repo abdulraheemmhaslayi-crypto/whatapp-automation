@@ -64,7 +64,6 @@ services:
         condition: service_healthy
 
   app:
-    build: .
     image: quikro-automation:${IMAGE_TAG:-dev}
     ports:
       - "${APP_PORT:-8000}:8000"
@@ -90,7 +89,6 @@ services:
     restart: unless-stopped
 
   worker:
-    build: .
     image: quikro-automation:${IMAGE_TAG:-dev}
     command: python manage.py process_tasks
     environment: *app-environment
