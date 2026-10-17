@@ -1,0 +1,487 @@
+﻿{% extends "base.html" %}
+{% load common_extras %}
+{% comment %}
+The design system's living style guide, and the smoke view the L1-B acceptance
+criteria ask for: toast + ui_select + platform icons, all exercised on one page
+that is not the page they were built for.
+
+Note what is NOT here: a per-page toast include. Studio's toast host is a
+partial each template has to remember to pull in; this page fires toasts with
+nothing but a form posting to a toast_response view.
+{% endcomment %}
+
+{% block title %}Design system · Quikro{% endblock %}
+
+{% block page_header %}
+<h1 class="page-title">Design system</h1>
+<p class="text-sm mb-6" style="color: var(--text-secondary);">
+    The tokens, components and helpers every later UI issue renders into.
+</p>
+{% endblock %}
+
+{% block content %}
+<div class="space-y-10 max-w-3xl">
+
+    <section>
+        <h2 class="text-sm font-semibold mb-1" style="color: var(--text-primary);">Colour roles</h2>
+        <p class="text-xs mb-3" style="color: var(--text-tertiary);">
+            Orange is the primary action and the focus ring, nothing else. Selected and current are ink;
+            state is one of five tones, always a dot and a word. <code>test_colour_roles.py</code> holds the line.
+        </p>
+        <div class="flex flex-wrap items-center gap-2">
+            <button type="button" class="btn-pill-primary">Primary action</button>
+            <button type="button" class="btn-pill-secondary">Secondary</button>
+            <button type="button" class="btn-pill-secondary btn-pill-sm">Small</button>
+            <button type="button" class="btn-danger-link">Delete this flow</button>
+        </div>
+        <div class="flex flex-wrap items-center gap-2 mt-4">
+            {% include "components/status_pill.html" with tone="success" label="Live" %}
+            {% include "components/status_pill.html" with tone="warning" label="Offline" %}
+            {% include "components/status_pill.html" with tone="info" label="Sending" %}
+            {% include "components/status_pill.html" with tone="error" label="Failed" %}
+            {% include "components/status_pill.html" with tone="neutral" label="Draft" %}
+        </div>
+    </section>
+
+    <section>
+        <h2 class="text-sm font-semibold mb-1" style="color: var(--text-primary);">Tabs</h2>
+        <p class="text-xs mb-3" style="color: var(--text-tertiary);">
+            <code>.tabs</code> at the top of a page (links, <code>aria-current</code>), <code>.tabs-inline</code>
+            inside a pane (a <code>tablist</code>, <code>aria-selected</code>). Active is ink.
+        </p>
+        <div class="card overflow-hidden">
+            <nav class="tabs" aria-label="Example">
+                <a class="tab" href="#" aria-current="page">Flows</a>
+                <a class="tab" href="#">Sequences</a>
+                <a class="tab" href="#">Templates</a>
+            </nav>
+            <div class="px-5 py-3" x-data="{ view: 'all' }">
+                <div class="tabs tabs-inline" role="tablist" aria-label="Views">
+                    <button type="button" role="tab" class="tab" :aria-selected="view === 'all'" @click="view = 'all'">All <span class="tab-count">6</span></button>
+                    <button type="button" role="tab" class="tab" :aria-selected="view === 'mine'" @click="view = 'mine'">Mine <span class="tab-count">2</span></button>
+                    <button type="button" role="tab" class="tab" :aria-selected="view === 'done'" @click="view = 'done'">Done <span class="tab-count">1</span></button>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section>
+        <h2 class="text-sm font-semibold mb-1" style="color: var(--text-primary);">Summary cards</h2>
+        <div class="summary-cards mt-3">
+            <div class="summary-card"><span class="dot dot-success" aria-hidden="true"></span><span class="summary-card-value">3</span><span class="summary-card-label">Live</span></div>
+            <div class="summary-card"><span class="dot dot-warning" aria-hidden="true"></span><span class="summary-card-value">1</span><span class="summary-card-label">Offline</span></div>
+            <div class="summary-card"><span class="dot dot-neutral" aria-hidden="true"></span><span class="summary-card-value">2</span><span class="summary-card-label">Draft</span></div>
+        </div>
+    </section>
+
+    <section>
+        <h2 class="text-sm font-semibold mb-1" style="color: var(--text-primary);">Table, meter and step dots</h2>
+        <div class="card overflow-hidden mt-3">
+            <div class="data-table-wrap">
+                <table class="data-table">
+                    <thead><tr><th>Sequence</th><th>Steps</th><th class="is-num">Active</th><th>Completion</th><th>Status</th></tr></thead>
+                    <tbody>
+                        <tr>
+                            <td><span class="data-table-title">New subscriber welcome</span><p class="data-table-meta">Instagram · over 7 days</p></td>
+                            <td><span class="step-dots" aria-hidden="true"><span></span><span></span><span></span><span></span></span> 4 steps</td>
+                            <td class="is-num">182</td>
+                            <td><div class="meter"><div class="meter-fill meter-success" style="width: 64%;"></div></div><p class="meter-label">64% complete</p></td>
+                            <td>{% include "components/status_pill.html" with tone="success" label="Active" %}</td>
+                        </tr>
+                        <tr>
+                            <td><span class="data-table-title">October product update</span><p class="data-table-meta">Telegram</p></td>
+                            <td>—</td>
+                            <td class="is-num">2,140</td>
+                            <td><div class="meter"><div class="meter-fill meter-success" style="width: 55%;"></div><div class="meter-fill meter-info" style="width: 20%;"></div><div class="meter-fill meter-error" style="width: 5%;"></div></div><p class="meter-label">1,490 of 2,140</p></td>
+                            <td>{% include "components/status_pill.html" with tone="info" label="Sending" %}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section>
+        <h2 class="text-sm font-semibold mb-1" style="color: var(--text-primary);">Option cards</h2>
+        <p class="text-xs mb-3" style="color: var(--text-tertiary);">
+            Real radios, visually hidden: arrow keys move between cards. Selected is a 2px ink border.
+        </p>
+        <fieldset class="option-cards">
+            <legend class="sr-only">Who receives it</legend>
+            <label class="option-card">
+                <input type="radio" name="demo-audience" value="all">
+                <span class="option-card-body"><span class="option-card-title">All subscribers</span><span class="option-card-text">Everyone who opted in</span></span>
+                <span class="option-card-meta">3,120</span><span class="option-card-radio" aria-hidden="true"></span>
+            </label>
+            <label class="option-card">
+                <input type="radio" name="demo-audience" value="leads" checked>
+                <span class="option-card-body"><span class="option-card-title">Leads, last 30 days</span><span class="option-card-text">Tag "lead" and active this month</span></span>
+                <span class="option-card-meta">812</span><span class="option-card-radio" aria-hidden="true"></span>
+            </label>
+        </fieldset>
+    </section>
+
+    <section>
+        <h2 class="text-sm font-semibold mb-1" style="color: var(--text-primary);">Stepper</h2>
+        <ol class="stepper mt-3" aria-label="Broadcast steps">
+            <li><span class="stepper-step is-done"><span class="stepper-index">{% include "partials/_nav_icon.html" with name="check" icon_size=13 %}</span><span class="stepper-label">Channel</span></span></li>
+            <li class="stepper-link is-done" aria-hidden="true"></li>
+            <li><span class="stepper-step is-current" aria-current="step"><span class="stepper-index">2</span><span class="stepper-label">Audience</span></span></li>
+            <li class="stepper-link" aria-hidden="true"></li>
+            <li><span class="stepper-step"><span class="stepper-index">3</span><span class="stepper-label">Message</span></span></li>
+        </ol>
+        <ol class="stepper stepper-vertical mt-5 max-w-[220px]" aria-label="Setup steps">
+            <li><span class="stepper-step is-current" aria-current="step"><span class="stepper-index">1</span><span class="stepper-label">Trigger<span class="stepper-sub">When it starts</span></span></span></li>
+            <li><span class="stepper-step"><span class="stepper-index">2</span><span class="stepper-label">Reply<span class="stepper-sub">What it sends</span></span></span></li>
+        </ol>
+    </section>
+
+    <section>
+        <h2 class="text-sm font-semibold mb-1" style="color: var(--text-primary);">Empty state</h2>
+        <div class="mt-3" x-data>
+            {% include "components/empty_state.html" with icon="flows" title="No flows match" body="Try a different word, or clear the filters." action_label="Clear filters" action_click="0" %}
+        </div>
+    </section>
+
+    <section>
+        <h2 class="text-sm font-semibold mb-1" style="color: var(--text-primary);">Toasts</h2>
+        <p class="text-xs mb-3" style="color: var(--text-tertiary);">
+            Fired by <code>toast_response(...)</code> over <code>HX-Trigger</code>. The host lives in
+            <code>base.html</code>, so this works on every page with no include.
+        </p>
+        <div class="flex flex-wrap gap-2">
+            <button type="button" class="btn-outline btn-inline" hx-post="{% url 'ui_demo_toast' %}" hx-vals='{"tone": "success"}' hx-swap="none">Success</button>
+            <button type="button" class="btn-outline btn-inline" hx-post="{% url 'ui_demo_toast' %}" hx-vals='{"tone": "info"}' hx-swap="none">Info</button>
+            <button type="button" class="btn-outline btn-inline" hx-post="{% url 'ui_demo_toast' %}" hx-vals='{"tone": "warn"}' hx-swap="none">Warning</button>
+            <button type="button" class="btn-outline btn-inline" hx-post="{% url 'ui_demo_toast' %}" hx-vals='{"tone": "error"}' hx-swap="none">Error</button>
+        </div>
+    </section>
+
+    <section>
+        <h2 class="text-sm font-semibold mb-1" style="color: var(--text-primary);">Select</h2>
+        <p class="text-xs mb-3" style="color: var(--text-tertiary);">
+            <code>{% templatetag openblock %} ui_select {% templatetag closeblock %}</code>: single and multi,
+            with a panel that escapes the toolbar's overflow.
+        </p>
+        <div class="bb-filters-scroll flex items-center gap-2 overflow-x-auto pb-1"
+             x-data="{ status: '', channels: [] }">
+            {% ui_select model="status" options=ui_demo_statuses placeholder="All statuses" icon="status" %}
+            {% ui_select model="channels" options=ui_demo_channels multiple=True placeholder="Channels" icon="channel" %}
+            <span class="text-xs whitespace-nowrap" style="color: var(--text-tertiary);"
+                  x-text="'status=' + (status || 'all') + ' channels=' + (channels.length || 'all')"></span>
+        </div>
+    </section>
+
+    <section>
+        <h2 class="text-sm font-semibold mb-1" style="color: var(--text-primary);">Platform icons</h2>
+        <p class="text-xs mb-3" style="color: var(--text-tertiary);">
+            One partial, six platforms, <code>currentColor</code>. The last tile is an unknown key,
+            proving the fallback glyph.
+        </p>
+        <div class="flex flex-wrap gap-4">
+            {% for platform in ui_demo_platforms %}
+            <div class="flex flex-col items-center gap-1.5 w-20">
+                <span class="pi-chip pi-chip-md {{ platform|platform_class }} w-8 h-8">{% include "partials/_platform_icon.html" with platform=platform size="md" %}</span>
+                <span class="{{ platform|platform_ink_class }}">{% include "partials/_platform_icon.html" with platform=platform size="sm" %}</span>
+                <span class="text-[10px] truncate w-full text-center" style="color: var(--text-tertiary);">{{ platform }}</span>
+            </div>
+            {% endfor %}
+        </div>
+        <p class="text-xs mt-4 mb-2" style="color: var(--text-tertiary);">
+      <code>.pi-chip-hero</code> at <code>size="lg"</code> is the channel connect pages' mark. The
+            radius has to be a class: <code>.pi-chip</code> sets <code>border-radius</code> unlayered,
+            so a <code>rounded-*</code> utility beside it loses silently.
+        </p>
+        <div class="flex flex-wrap gap-3">
+            {% for platform in ui_demo_platforms %}
+            <span class="pi-chip pi-chip-hero {{ platform|platform_class }}">{% include "partials/_platform_icon.html" with platform=platform size="lg" only %}</span>
+            {% endfor %}
+        </div>
+    </section>
+
+    <section>
+        <h2 class="text-sm font-semibold mb-1" style="color: var(--text-primary);">Buttons</h2>
+        <div class="flex flex-wrap items-center gap-3 mt-3">
+            <button type="button" class="btn-brand btn-inline">Primary</button>
+            <button type="button" class="btn-outline btn-inline">Outline</button>
+            <button type="button" class="btn-link">Link</button>
+        </div>
+    </section>
+
+    <section>
+        <h2 class="text-sm font-semibold mb-3" style="color: var(--text-primary);">Alerts</h2>
+        <div class="space-y-2">
+            <div class="alert-success">Saved. Every tone has a matching toast.</div>
+            <div class="alert-info">Informational, for context a user did not ask for.</div>
+            <div class="alert-warning">Warning, the fourth tone, which Studio's stylesheet is missing.</div>
+            <div class="alert-error">Something went wrong.</div>
+        </div>
+    </section>
+
+    <section>
+        <h2 class="text-sm font-semibold mb-3" style="color: var(--text-primary);">Form controls</h2>
+        <div class="space-y-3 max-w-sm">
+            <input type="text" class="form-input-styled" placeholder="Text input">
+            <input type="text" class="form-input-styled is-error" placeholder="Input with an error">
+            <select class="form-input-styled bb-select">
+                <option>Select with a custom chevron</option>
+            </select>
+            <label class="flex items-center gap-2 text-sm" style="color: var(--text-secondary);">
+                <input type="checkbox" class="bb-checkbox" checked> Checkbox, bean green
+            </label>
+            <label class="flex items-center gap-2 text-sm" style="color: var(--text-secondary);">
+                <span class="switch"><input type="checkbox" role="switch" aria-label="Example switch" checked><span class="switch-track"></span></span>
+                Toggle switch
+            </label>
+        </div>
+    </section>
+
+    <section>
+        <h2 class="text-sm font-semibold mb-1" style="color: var(--text-primary);">Form fields</h2>
+        <p class="text-xs mb-3" style="color: var(--text-tertiary);">
+      Label, control, hint, error: the shape every settings page repeats. Spacing between
+            fields is <code>.field</code>'s own margin; the control's width stays a call-site
+            decision, which is why none of these classes sets one.
+        </p>
+        <div class="card p-5 max-w-md">
+            <div class="field">
+                <label class="field-label" for="demo-name">Name</label>
+                <input class="form-input-styled" id="demo-name" type="text" value="Marta's shop">
+                <p class="field-hint">What your team sees in the workspace switcher.</p>
+            </div>
+            <div class="field">
+                <label class="field-label" for="demo-tz">Timezone<span class="field-label-optional">optional</span></label>
+                <select class="form-input-styled bb-select" id="demo-tz"><option>Europe/Berlin</option></select>
+            </div>
+            <div class="field">
+                <label class="field-label" for="demo-colour">Colour</label>
+                <div class="field-swatch">
+                    <input class="field-swatch-well" type="color" value="#F97316" aria-label="Pick a colour">
+                    <input class="form-input-styled is-error" id="demo-colour" type="text" value="octarine" style="width: 9rem;">
+                </div>
+                <p class="field-error">Colours must be a 6-digit hex value like #3B82F6.</p>
+            </div>
+            <label class="field-check" for="demo-check">
+                <input class="bb-checkbox" id="demo-check" type="checkbox" checked>
+                <span class="field-check-body">
+                    <span class="field-label">Rewrite links in email bodies</span>
+                    <span class="field-hint">Every link is replaced with one that records the click.</span>
+                </span>
+            </label>
+            <div class="form-actions">
+                <button type="button" class="btn-pill-primary">Save changes</button>
+            </div>
+        </div>
+    </section>
+
+    <section>
+        <h2 class="text-sm font-semibold mb-1" style="color: var(--text-primary);">Setup steps, and a copy field</h2>
+        <p class="text-xs mb-3" style="color: var(--text-tertiary);">
+            The channel connect pages' two pieces. Tailwind's preflight zeroes <code>ol</code> and
+            nothing restored it, so these steps are the first numbered list in the product.
+        </p>
+        <div class="card p-5 max-w-lg">
+            <ol class="cn-steps mb-5" role="list">
+                <li class="cn-step">Open <code>@BotFather</code> in Telegram and send <code>/newbot</code>.</li>
+                <li class="cn-step">Choose a display name and a username ending in <code>bot</code>.</li>
+                <li class="cn-step">Copy the token it replies with.</li>
+            </ol>
+            {% include "partials/_copy_field.html" with label="Deliveries arrive at" value="https://example.com/hooks/telegram/" hint="Reachable from the public internet over HTTPS." only %}
+        </div>
+    </section>
+
+
+    {% comment %}
+      Everything below arrived with the redesign. The point of this page is that
+      a component nobody can look at is a component nobody reviews, so the
+      shared pieces go here the day they are written — not the per-surface
+      .ib-* / .crm-* / .fb-* families, which only make sense in place.
+    {% endcomment %}
+
+    <section>
+        <h2 class="text-sm font-semibold mb-1" style="color: var(--text-primary);">Type scale</h2>
+        <p class="text-xs mb-3" style="color: var(--text-tertiary);">
+            <code>--fs-*</code>, not <code>--text-*</code>: that prefix already holds the text
+            <em>colours</em>, and it is Tailwind v4's <code>@theme</code> namespace.
+        </p>
+        <div class="card p-5 space-y-2">
+            <div class="page-title">Page title · 28</div>
+            <div class="section-title">Section heading · 17</div>
+            <div class="page-lede">Lede and body copy · 15</div>
+            <div style="font-size: var(--fs-body); color: var(--text-tertiary);">Meta and table text · 13</div>
+            <div class="section-eyebrow">Eyebrow · 12 uppercase</div>
+        </div>
+    </section>
+
+    <section>
+        <h2 class="text-sm font-semibold mb-1" style="color: var(--text-primary);">Surfaces</h2>
+        <p class="text-xs mb-3" style="color: var(--text-tertiary);">
+            <code>.card</code> sets background, border and radius and nothing else: no padding, no
+            display. This file is unlayered, so any property it set would be one no utility at the
+            call site could ever override.
+        </p>
+        <div class="grid gap-3 sm:grid-cols-3">
+            <div class="card p-4">
+                <div class="section-eyebrow mb-1">Card</div>
+                <p class="text-[13px]" style="color: var(--text-tertiary);">The white surface everything sits on.</p>
+            </div>
+            <div class="tile p-4">
+                <div class="section-eyebrow mb-1">Tile</div>
+                <p class="text-[13px]" style="color: var(--text-tertiary);">Sunken, for pickers and options.</p>
+            </div>
+            <div class="tile tile-selected p-4">
+                <div class="section-eyebrow mb-1">Tile, chosen</div>
+                <p class="text-[13px]" style="color: var(--text-secondary);">The one they picked.</p>
+            </div>
+        </div>
+    </section>
+
+    {% comment %}x-data of its own: this page may render without the app shell, whose scope every other trigger sits in.{% endcomment %}
+    <section x-data>
+        <h2 class="text-sm font-semibold mb-1" style="color: var(--text-primary);">Modal</h2>
+        <p class="text-[13px] mb-3" style="color: var(--text-tertiary);">
+            Every create form lives in one: the button names the thing, the dialog asks for its name.
+            <code>{% templatetag openblock %} modal "id" title="…" close_on="event" {% templatetag closeblock %}</code>, opened with <code>$modal('id')</code>.
+        </p>
+        <button type="button" class="btn-pill-primary" @click="$modal('demo-modal')">New tag</button>
+        {% modal "demo-modal" title="New tag" %}
+        <form @submit.prevent="close()">
+            <div class="bb-modal-body">
+                <div class="field">
+                    <label class="field-label" for="demo-modal-name">What is the tag called?</label>
+                    <input class="form-input-styled" id="demo-modal-name" type="text" name="name" required autofocus placeholder="VIP">
+                </div>
+            </div>
+            <div class="bb-modal-actions">
+                <button type="button" class="btn-pill-secondary" @click="close()">Cancel</button>
+                <button type="submit" class="btn-pill-primary">Create tag</button>
+            </div>
+        </form>
+        {% endmodal %}
+    </section>
+
+    <section>
+        <h2 class="text-sm font-semibold mb-3" style="color: var(--text-primary);">Buttons and chips</h2>
+        <div class="card p-5">
+            <div class="flex flex-wrap items-center gap-2 mb-4">
+                <button type="button" class="btn-pill-primary">One primary action</button>
+                <button type="button" class="btn-pill-secondary">Secondary</button>
+                <button type="button" class="btn-pill-primary btn-pill-sm">Primary, small</button>
+                <button type="button" class="btn-pill-secondary btn-pill-sm">Secondary, small</button>
+                <button type="button" class="btn-pill-primary" disabled>Disabled</button>
+                <button type="button" class="btn-icon-round" aria-label="More">
+                    <svg width="17" height="17" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
+                </button>
+            </div>
+        </div>
+    </section>
+
+    <section>
+        <h2 class="text-sm font-semibold mb-1" style="color: var(--text-primary);">State, in words</h2>
+        <p class="text-xs mb-3" style="color: var(--text-tertiary);">
+            The dot carries the colour and the text carries the meaning. Bean green is
+            ~2.8:1 on white, so it is a fill and never a label. <code>--success-700</code> is the
+            readable weight.
+        </p>
+        {% comment %}
+          Each on its own line: .health is inline-flex, because in a table cell
+          or beside a channel name it has to sit in the run of text. A wrapper
+          is the right way to stack them, not a display override that would
+          break every real call site.
+        {% endcomment %}
+        <div class="card p-5 space-y-2.5">
+            <div><span class="health health-ok"><span class="health-dot"></span>Healthy · last message 4 minutes ago</span></div>
+            <div><span class="health health-bad"><span class="health-dot"></span>Needs reconnecting · nothing received for 2 days</span></div>
+            <div><span class="health health-warn"><span class="health-dot"></span>Connected, but nothing has arrived yet</span></div>
+            <div><span class="health health-off"><span class="health-dot"></span>Turned off · no messages sent or received</span></div>
+        </div>
+    </section>
+
+    <section>
+        <h2 class="text-sm font-semibold mb-3" style="color: var(--text-primary);">Avatars</h2>
+        <div class="card p-5 flex items-center gap-3">
+            <span class="avatar avatar-xs">M</span>
+            <span class="avatar avatar-sm">MK</span>
+            <span class="avatar">MK</span>
+            <span class="avatar avatar-lg">MK</span>
+            <span class="avatar avatar-brand">MK</span>
+        </div>
+    </section>
+
+    <section>
+        <h2 class="text-sm font-semibold mb-1" style="color: var(--text-primary);">Empty state</h2>
+        <p class="text-xs mb-3" style="color: var(--text-tertiary);">
+            One, where every list used to hand-roll its own.
+        </p>
+        <div class="empty-state">
+            <p class="empty-state-title">No flows here yet</p>
+            <p class="empty-state-body">
+                A flow replies for you when something happens: a comment, a keyword, a reply to your story.
+            </p>
+            <button type="button" class="btn-pill-primary mt-4">New flow</button>
+        </div>
+    </section>
+
+    <section>
+        <h2 class="text-sm font-semibold mb-3" style="color: var(--text-primary);">List row</h2>
+        <div class="card overflow-hidden">
+            <div class="list-row">
+                <span class="list-row-icon list-row-icon-live">{% include "partials/_nav_icon.html" with name="flows" icon_size=19 %}</span>
+                <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-2.5">
+                        <span class="list-row-title">Instagram comment → DM</span>
+                        <span class="status-pill status-pill-active"><span class="status-pill-dot"></span>Live</span>
+                    </div>
+                    <div class="list-row-meta">When someone comments “price” · edited 2 hours ago</div>
+                </div>
+                <span class="btn-pill-secondary btn-pill-sm">Open</span>
+                <span class="btn-icon-round">
+                    <svg width="17" height="17" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
+                </span>
+            </div>
+            <div class="list-row">
+                <span class="list-row-icon">{% include "partials/_nav_icon.html" with name="flows" icon_size=19 %}</span>
+                <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-2.5">
+                        <span class="list-row-title">Lead magnet, PDF delivery</span>
+                        <span class="status-pill status-pill-draft">Draft</span>
+                    </div>
+                    <div class="list-row-meta">No trigger yet, so it will not run until you add one</div>
+                </div>
+                <span class="btn-pill-secondary btn-pill-sm">Continue</span>
+                <span class="btn-icon-round">
+                    <svg width="17" height="17" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
+                </span>
+            </div>
+        </div>
+    </section>
+
+    <section>
+        <h2 class="text-sm font-semibold mb-3" style="color: var(--text-primary);">Brand ramp</h2>
+        <div class="flex flex-wrap gap-1">
+            <div class="w-12 h-10 rounded" style="background: var(--brand-50);"></div>
+            <div class="w-12 h-10 rounded" style="background: var(--brand-100);"></div>
+            <div class="w-12 h-10 rounded" style="background: var(--brand-200);"></div>
+            <div class="w-12 h-10 rounded" style="background: var(--brand-300);"></div>
+            <div class="w-12 h-10 rounded" style="background: var(--brand-400);"></div>
+            <div class="w-12 h-10 rounded" style="background: var(--brand-500);"></div>
+            <div class="w-12 h-10 rounded" style="background: var(--brand-600);"></div>
+            <div class="w-12 h-10 rounded" style="background: var(--brand-700);"></div>
+            <div class="w-12 h-10 rounded" style="background: var(--brand-800);"></div>
+            <div class="w-12 h-10 rounded" style="background: var(--brand-900);"></div>
+        </div>
+        <p class="text-xs mt-3 mb-1" style="color: var(--text-tertiary);">
+            Bean green, the product's "good" colour since the redesign. 500 is a fill, 700 is text.
+        </p>
+        <div class="flex flex-wrap gap-1">
+            <div class="w-12 h-10 rounded" style="background: var(--brand-green-50);"></div>
+            <div class="w-12 h-10 rounded" style="background: var(--brand-green-100);"></div>
+            <div class="w-12 h-10 rounded" style="background: var(--brand-green-200);"></div>
+            <div class="w-12 h-10 rounded" style="background: var(--brand-green-500);"></div>
+            <div class="w-12 h-10 rounded" style="background: var(--brand-green-600);"></div>
+            <div class="w-12 h-10 rounded" style="background: var(--brand-green-700);"></div>
+        </div>
+    </section>
+
+</div>
+{% endblock %}

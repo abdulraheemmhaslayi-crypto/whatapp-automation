@@ -1,0 +1,117 @@
+# Dependabot keeps the pins in requirements/base.txt / requirements/dev.txt,
+# package.json and the workflow action SHAs moving (SECURITY-BASELINE §10).
+#
+# Both requirements files list direct dependencies at exact versions, which is
+# the plain layout Dependabot bumps in place — one PR per package, no
+# recompilation step.
+#
+# The directory is "/" rather than "/requirements" on purpose. From "/",
+# Dependabot also looks one level down and accepts any .txt file whose path
+# contains "requirements", so base.txt and dev.txt are picked up by name.
+# Pointed at "/requirements" it would see bare "base.txt" and "dev.txt" and fall
+# back to checking every line against its own requirement grammar, which a
+# single line it does not understand is enough to fail.
+#
+# The vulnerable fixture under tests/fixtures/ is deliberately not registered
+# here, and sits two levels down where that one-level lookup does not reach: it
+# is a CI self-test, not a dependency, and must stay on its vulnerable version.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    ignore:
+      # Django stays on the 5.2 LTS line: SPEC §2 fixes the major at 5.x, and
+      # 5.2 has security support through Apr 2028. Patch bumps within 5.2 are
+      # exactly the security releases we want arriving automatically, so only
+      # minor and major are ignored. Moving off LTS is a deliberate decision
+      # with a migration behind it, not a weekly PR — Dependabot opened one for
+      # 6.1 (#36) and it was closed for this reason. Drop this block when the
+      # project chooses its next LTS.
+      - dependency-name: "django"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+    groups:
+      python-dev-tooling:
+        patterns:
+          - "ruff"
+          - "mypy"
+          - "django-stubs"
+          - "pytest*"
+          - "pip-audit"
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    ignore:
+      # zustand is not ours to choose. @xyflow/react depends on "zustand":
+      # "^4.4.0", so a 5.x top level does not replace React Flow's copy — npm
+      # installs both, and the store the builder reads stops being the store
+      # React Flow writes. Dependabot opened #98 for 5.0.15; it put 7 builder
+      # tests into "Maximum update depth exceeded" with the loop running
+      # through node_modules/@xyflow/react/node_modules/zustand. Drop this
+      # block when @xyflow/react widens its range to "^4 || ^5".
+      - dependency-name: "zustand"
+        update-types:
+          - "version-update:semver-major"
+      # @types/node must track the Node runtime rather than lead it. Types that
+      # lag merely under-describe the runtime; types that lead it let tsc
+      # accept APIs the container does not have, so the break surfaces in
+      # production instead of at build time. Majors move when the runtime
+      # below does, in the same PR. Patches and minors within the line are
+      # exactly what we want arriving weekly.
+      - dependency-name: "@types/node"
+        update-types:
+          - "version-update:semver-major"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+
+  # The Dockerfile's base images. Without this the Node stage silently ages out
+  # — which is exactly how it sat on the end-of-life node:20 line.
+  #
+  # Dependabot only rewrites the Dockerfile: it does not read image tags out of
+  # compose files, and it knows nothing about .nvmrc, package.json's `engines`
+  # or the README. On its own that would be worse than no bump at all, because
+  # CI takes its Node from .nvmrc — a PR moving just the base image would go
+  # green while testing the major it was meant to replace. The `Node pins
+  # agree` step in the audit job is what makes that safe: a Dependabot PR here
+  # fails until the other four sites are moved to match, which is the intended
+  # workflow — Dependabot proposes the bump, the check makes it complete.
+  #
+  # Two runtime lines are held back here, because for those the check can only
+  # report the incompleteness — it cannot decide whether the move is wanted.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    ignore:
+      # Node stays on an LTS line. Odd-numbered majors never become LTS: 25
+      # goes end-of-life around Jun 2026, while 24 has security support into
+      # 2028. Dependabot cannot tell the two apart and opened #97 for 25, so
+      # majors are chosen here — take 26 when it goes LTS in Oct 2026, and
+      # move .nvmrc, both `engines` fields and ci.yml in the same PR. Minor
+      # and patch bumps within the line still arrive automatically.
+      - dependency-name: "node"
+        update-types:
+          - "version-update:semver-major"
+      # Python's image tag is one of five pins on the interpreter: ci.yml (in
+      # four jobs), ruff's target-version, mypy's python_version and the
+      # compiled lockfiles are the others. Moving only the image ships a
+      # runtime that nothing in CI exercises — green pipeline, runtime-only
+      # break. Dependabot opened #56 for 3.14; Django 5.2 does support it, so
+      # the objection is not the framework but the coordination. A tag bump is
+      # semver-minor here, so both types are held.
+      - dependency-name: "python"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"

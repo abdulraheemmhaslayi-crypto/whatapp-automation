@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% comment %}
+Settings layout: the sidebar, carrying the settings rows instead of the
+product's, and the page.
+
+**What changed, twice.** This layout first expressed "a settings section" by
+overriding {% block sidebar_nav %}
+and replacing the product's whole navigation — which is why
+partials/_nav_badge_sinks.html had to exist at all: base.html went on rendering
+the bell's 60s poll outside the nav it had just swapped away, and all 14
+settings pages logged htmx:oobErrorNoTarget once a minute. The fix was a SECOND
+column beside the sidebar, which fixed the badges and left 232px of settings
+rows standing next to 240px of app rows nobody was using any more.
+
+Now the settings rows are IN the sidebar, and the poll is not stranded because
+the poll was never outside the nav: it lives in the Notifications row, so a
+page with no product nav is a page that never polls. All this layout does is
+hand partials/_app_sidebar.html the rows to draw — hence a block around the
+include rather than a block around the nav. A "Back to app" row replaces the
+workspace switcher above the rows; see the partial.
+
+What has NOT changed is how the active row is decided. Studio uses a
+`settings_active` string that 11 views across 8 apps have to remember to set —
+a second convention on top of the resolver_match checks the main nav uses. The
+settings rows are the same data structure the sidebar's rows are, active flag
+included, and now the same renderer too.
+
+Concrete settings pages extend this and fill {% block content %}, which is
+re-declared empty below so it is available to grandchildren.
+{% endcomment %}
+
+{% block page_header %}{% endblock %}
+
+{% block app_sidebar %}{% include "partials/_app_sidebar.html" with settings_groups=settings_nav_groups %}{% endblock %}
+
+{% comment %}
+  Settings pages are still largely bare semantic HTML leaning on the
+  `@layer base` defaults in .app-content, which assume a white ground. The page
+  ground is --surface-page now, so the layout puts those rules back on a card.
+
+  Done by styling .app-content from here rather than by wrapping
+  {% block content %} in a <div>: children fill `content` directly, and a
+  wrapper declared in this block would be replaced along with it by every one
+  of them. A page migrated to its own .card sections clears this block.
+{% endcomment %}
+{% block content_wrap %}card p-6{% endblock %}
+
+{% block content %}{% endblock %}

@@ -1,0 +1,50 @@
+{
+  "name": "quikro",
+  "private": true,
+  "description": "Frontend toolchain: the Tailwind 4 build for apps/theme/static_src, the vendored runtime libraries in static/js, and the flow-builder React island in apps/flows/frontend.",
+  "license": "AGPL-3.0-or-later",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build:css": "tailwindcss --input ./apps/theme/static_src/src/styles.css --output ./apps/theme/static/css/dist/styles.css --minify",
+    "watch:css": "tailwindcss --input ./apps/theme/static_src/src/styles.css --output ./apps/theme/static/css/dist/styles.css --watch",
+    "build:js": "vite build --config apps/flows/frontend/vite.config.mts",
+    "watch:js": "vite build --config apps/flows/frontend/vite.config.mts --watch",
+    "typecheck:js": "tsc --noEmit --project apps/flows/frontend/tsconfig.json",
+    "test:js": "vitest run --config apps/flows/frontend/vite.config.mts",
+    "vendor": "node scripts/vendor-js.mjs",
+    "build": "npm run build:css && npm run build:js && npm run vendor"
+  },
+  "dependencies": {
+    "@xyflow/react": "12.11.3",
+    "alpinejs": "3.16.3",
+    "chart.js": "4.5.1",
+    "flatpickr": "4.6.13",
+    "htmx.org": "2.0.10",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "sortablejs": "1.15.7",
+    "zustand": "4.5.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "4.3.3",
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/react": "16.3.2",
+    "@testing-library/user-event": "14.6.6",
+    "@types/node": "24.13.3",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.1",
+    "ajv": "8.20.0",
+    "jsdom": "30.0.1",
+    "tailwindcss": "4.3.3",
+    "typescript": "7.0.2",
+    "vite": "8.2.2",
+    "vitest": "4.1.11"
+  },
+  "overrides": {
+    "@tailwindcss/cli": {
+      "@parcel/watcher": "2.6.0"
+    }
+  }
+}

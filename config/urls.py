@@ -1,0 +1,215 @@
+from django.apps import apps as django_apps
+from django.conf import settings
+from django.conf.urls.static import static
+from django.contrib import admin
+from django.urls import URLPattern, URLResolver, include, path
+
+from apps.accounts import views as account_views
+from apps.common import views
+
+# Sidebar destinations that no issue has built yet. Every one names the issue
+# that replaces it, and the nav entry does not change when that happens — the
+# owning issue swaps the view, not apps.common.context_processors.
+#
+# Workspace-scoped stubs sit under /w/<uuid:workspace_id>/ (SPEC §16) so they
+# land where their real views will, and so the kwarg name matches
+# RBACMiddleware's resolution contract.
+_APP_LAYOUT = "app"
+_SETTINGS_LAYOUT = "settings"
+_WS_SETTINGS_LAYOUT = "workspace_settings"
+
+# (route, url name, heading, owning issue, layout, permission)
+#
+# The permission is the one the real view will gate on, from
+# apps.members.roles.PERMISSION_KEYS. A placeholder under /w/<uuid>/ is a real
+# endpoint: SECURITY-BASELINE §1 requires it to 404 for a member of another
+# workspace, and tests/idor.py walks it automatically.
+# #22 took the sequences placeholder and #23 the broadcasts one, each replacing
+# it with a real include below. The redesign briefly added a third for the
+# flow-template gallery, which was a mistake in two directions: the Templates
+# tab shipped pointing at it, so the tab was dead on arrival, and what it
+# answered was "Templates is not built yet. Lands with issue #redesign." — an
+# issue number, to a customer. The gallery is a real page now
+# (apps/flows/views.py's flow_templates), and this list is empty again.
+_WORKSPACE_STUBS: list[tuple[str, str, str, str, str, str]] = []
+
+# Not workspace-scoped, so login is the whole gate.
+_GLOBAL_STUBS: list[tuple[str, str, str, str, str]] = [
+    ("accounts/preferences/", "settings_preferences", "Preferences", "#31 follow-up", _SETTINGS_LAYOUT),
+]
+
+
+def _if_installed(app: str, *mounts: tuple[str, str]) -> list[URLResolver]:
+    """``path(route, include(module))`` per mount, or nothing when ``app`` is absent.
+
+    ``include()`` imports the module it names *at URLConf build time*, and an app
+    module that declares models raises ``RuntimeError`` when its app is not in
+    ``INSTALLED_APPS``. So an unconditional include turns "this deployment does
+    not run that app" into "this deployment does not boot" — which would undo
+    the late-resolving seams (``apps/flows/analytics.py``,
+    ``apps/messaging/analytics.py``) that exist precisely so an absent app costs
+    a feature rather than the process.
+
+    **The mounts are (route, module) pairs rather than built ``path()`` objects**,
+    and that is the whole reason this takes strings. Python evaluates arguments
+    before the call, so passing ``path("", include("apps.x.urls"))`` would run the
+    import *on the way in* and raise before the guard was ever consulted — a
+    guard that reads correctly and does nothing. Building them in here is what
+    defers the import to the branch that wants it.
+
+    A helper rather than an ``if`` around the list so every mount point of one
+    app reads the same and none can be guarded while its sibling is not.
+    """
+    if not django_apps.is_installed(app):
+        return []
+    return [path(route, include(module)) for route, module in mounts]
+
+
+def _stub(route: str, name: str, section: str, issue: str, layout: str) -> URLPattern:
+    return path(route, views.account_stub, {"section": section, "issue": issue, "layout": layout}, name=name)
+
+
+def _ws_stub(route: str, name: str, section: str, issue: str, layout: str, permission: str) -> URLPattern:
+    return path(
+        f"w/<uuid:workspace_id>/{route}",
+        views.workspace_stub(permission),
+        {"section": section, "issue": issue, "layout": layout},
+        name=name,
+    )
+
+
+urlpatterns = [
+    path("admin/", admin.site.urls),
+    # No trailing slash: SPEC §20 specifies /healthz, and probes are literal.
+    path("healthz", views.healthz, name="healthz"),
+    # The queue's HTTP drain, for hosts with no always-on worker process
+    # (SPEC §15). Not workspace-scoped: it is a deployment-level operations
+    # endpoint authenticated by TICK_TOKEN, and it 404s when that is unset.
+    path("", include("apps.queueing.urls")),
+    # The design system's living style guide. Static markup with no database
+    # access and no side effects; see apps.common.views.ui_demo.
+    path("ui/", views.ui_demo, name="ui_demo"),
+    path("ui/toast/", views.ui_demo_toast, name="ui_demo_toast"),
+    # Local routes first: /accounts/signup/ must resolve to the invite-aware
+    # view rather than allauth's own. Both live at the same path, so reversing
+    # `account_signup` still lands here.
+    path("accounts/", include("apps.accounts.urls")),
+    *[_stub(*stub) for stub in _GLOBAL_STUBS],
+    path("accounts/", include("allauth.urls")),
+    # Org-scoped management. One org per user in v1, so no id in the URL.
+    # Billing's two writes (start a subscription, open the portal). Mounted
+    # before the organization include below so the deeper prefix is tried first,
+    # the convention this file already states for the workspace mounts. The
+    # billing PAGE is organizations:billing and stays there — this app owns only
+    # the POSTs and the webhook. Both 404 when Stripe is unconfigured.
+    path("organization/billing/", include("apps.billing.urls")),
+    path("organization/", include("apps.organizations.urls")),
+    path("organization/members/", include("apps.members.urls")),
+    # API keys are org-tier (SPEC §4.1: they span every workspace in the org).
+    # This replaces the placeholder that used to sit in _GLOBAL_STUBS above and
+    # keeps its URL name, `settings_org_api_keys`, which the settings nav
+    # reverses — the owning issue swaps the view, not the nav registry.
+    path("organization/api-keys/", include("apps.api.urls_keys")),
+    # Invite acceptance is unauthenticated — the recipient has no org yet.
+    path("", include("apps.members.urls_public")),
+    # Public, token-bearing media delivery (#16). The fetcher is a messaging
+    # platform with no session; the signed token is the whole credential. Joins
+    # the /u/, /c/ and /o/ family documented in apps/common/signing.py.
+    path("", include("apps.media_library.urls_public")),
+    # The hosted unsubscribe page (#21). Same family, same reasoning: the
+    # recipient of an email has no account here, and SPEC §6.7 puts this link in
+    # every message the product sends.
+    path("", include("apps.channels.urls_public")),
+    # Click tracking and the open pixel (#26), completing the /u/, /m/, /c/, /o/
+    # family apps/common/signing.py documents. Unauthenticated for the same
+    # reason: the caller is a browser following a button or a mail client
+    # fetching an image, and the signed token is the whole credential.
+    #
+    # Guarded: this module imports the analytics models, so an unconditional
+    # include would refuse to boot a deployment that drops the app. Links
+    # already in the wild 404 there, which is the honest answer from a
+    # deployment that no longer counts anything.
+    *_if_installed("apps.analytics", ("", "apps.analytics.urls_public")),
+    # Per-user, so no workspace prefix: the bell shows every workspace at once
+    # (issue #7).
+    path("notifications/", include("apps.notifications.urls")),
+    # Workspace-scoped routes (SPEC §16). The kwarg name `workspace_id` is
+    # RBACMiddleware's resolution contract; do not rename it.
+    path("w/<uuid:workspace_id>/", include("apps.workspaces.urls")),
+    path("w/<uuid:workspace_id>/settings/channels/", include("apps.channels.urls")),
+    # Outbound webhooks are workspace-scoped (SPEC §5), unlike the API keys
+    # above: their url, secret and subscriptions belong to one workspace's data.
+    path("w/<uuid:workspace_id>/settings/webhooks/", include("apps.api.urls_webhooks")),
+    path("w/<uuid:workspace_id>/media/", include("apps.media_library.urls")),
+    # The inbox (issue #14) replaces the placeholder that used to sit in
+    # _WORKSPACE_STUBS above. A deep prefix, so it joins this group rather than
+    # the workspace-root includes below.
+    path("w/<uuid:workspace_id>/inbox/", include("apps.inbox.urls")),
+    # Sequences (issue #22): the placeholder is gone from _WORKSPACE_STUBS and
+    # the nav row now reverses `campaigns:list`. The app label is `campaigns`
+    # because apps/flows/picklists.py resolves it by that name; see
+    # apps/campaigns/apps.py.
+    path("w/<uuid:workspace_id>/sequences/", include("apps.campaigns.urls")),
+    # Broadcasts (issue #23), the same swap, at the same path and under the same
+    # permission the placeholder used — so the nav entry's target moves from a
+    # stub view to a real one and nothing else about the route changes.
+    path("w/<uuid:workspace_id>/broadcasts/", include("apps.broadcasts.urls")),
+    # The analytics pages (issue #26). A deep prefix like the ones above it, and
+    # separate from the /c/ and /o/ routes at the site root: those are public
+    # token routes with no workspace in the URL at all. Guarded for the reason
+    # the public half is; the nav row degrades to "#" on its own, because
+    # apps.common.context_processors reverses through reverse_cached.
+    *_if_installed("apps.analytics", ("w/<uuid:workspace_id>/analytics/", "apps.analytics.urls")),
+    # apps.contacts owns two disjoint stretches of the workspace URL space —
+    # contacts/ and the two settings pages — so it mounts once at the root of
+    # the prefix and spells the sub-paths itself (issue #3). It goes last of the
+    # workspace includes: a bare-prefix mount can only be shadowed, never
+    # shadow, and the ones above claim deeper prefixes.
+    path("w/<uuid:workspace_id>/", include("apps.contacts.urls")),
+    # Flows own two prefixes under the workspace — the pages at flows/ and
+    # SPEC §16's builder data API at api/flows/ — so they mount at the
+    # workspace root together under one namespace. See apps/flows/urls.py.
+    # Declared after the settings prefixes above: this one is mounted at the
+    # workspace root, so anything it might route has to lose to the more
+    # specific includes.
+    path("w/<uuid:workspace_id>/", include("apps.flows.urls")),
+    *[_ws_stub(*stub) for stub in _WORKSPACE_STUBS],
+    # Platform OAuth callbacks (SPEC §§6.3, 6.4). Session-authenticated but *not*
+    # workspace-scoped: Meta matches one exact redirect URI per app, so a
+    # per-workspace path would need one whitelist entry per tenant. The workspace
+    # travels in a signed ``state`` instead. See apps/channels/urls_oauth.py.
+    path("channels/", include("apps.channels.urls_oauth")),
+    # Stripe's webhook, for the optional hosted billing integration.
+    #
+    # **Declared before the channels include below, and that is not stylistic.**
+    # That module ends in `<str:platform>/`, which matches "stripe/" — so mounted
+    # the other way round this route would never be reached: the request would
+    # land in platform_webhook, fail its Platform-enum check and 404, with
+    # nothing anywhere saying why. Not part of that module either, because
+    # Stripe is not a messaging platform: different signature scheme, different
+    # dedup table, no adapter.
+    #
+    # 404s when STRIPE_WEBHOOK_SECRET is unset — the answer /internal/tick
+    # gives, for the reason _hub_challenge states: an endpoint that cannot
+    # verify anything should not advertise that it exists.
+    path("webhooks/stripe/", include("apps.billing.urls_webhooks")),
+    # Inbound webhooks (SPEC §7.1). Unauthenticated and deliberately NOT under
+    # /w/<workspace_id>/: a platform posting an event has no session, and
+    # RBACMiddleware would try to resolve a membership for it. The signature is
+    # the credential; see apps/channels/views_webhooks.py.
+    path("webhooks/", include("apps.channels.urls_webhooks")),
+    # The public REST API (SPEC §17). Like the inbound webhooks above it is not
+    # under /w/<workspace_id>/: an API key names its own workspace, so there is
+    # no URL kwarg for RBACMiddleware to resolve and no session for it to
+    # resolve one against. The bearer token is the whole credential; see
+    # apps/api/auth.py. Note apps.flows already owns w/<uuid>/api/flows/ — that
+    # is the session-authenticated builder API and does not collide with this.
+    path("api/v1/", include("apps.api.urls")),
+    path("", account_views.root, name="index"),
+]
+
+# Serve uploads from disk in development. Gated on local storage as well as
+# DEBUG: with STORAGE_BACKEND=s3 media lives off-origin, and mounting static()
+# on an off-origin MEDIA_URL would add a route this project does not want.
+if settings.DEBUG and settings.STORAGE_IS_LOCAL:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

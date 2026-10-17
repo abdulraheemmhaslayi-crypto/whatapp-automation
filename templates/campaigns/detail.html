@@ -1,0 +1,97 @@
+﻿{% extends "base.html" %}
+{% comment %}
+The sequence editor: status, ordered steps and the subscriber panel.
+
+Two regions, each with its own HTMX endpoint and its own refresh event, because
+they change for different reasons — adding a step must not re-render a
+subscriber list somebody is scrolling, and subscribing a contact changes the
+per-step counts, which is why subscriber mutations fire both events.
+{% endcomment %}
+
+{% block title %}{{ sequence.name }} · Sequences · Quikro{% endblock %}
+
+{% comment %}
+The editor bar (HANDOFF §2.3): a way back, the sequence's name and state, and
+one action that says what it does. The status used to be a select beside a
+"Save status" button — three words to read before anything happened. Now a
+draft offers "Activate sequence", the one orange control on the page; a live
+one offers to go back to draft (which stops new subscribers and leaves the
+people already on it where they are); an archived one offers to come back.
+Archiving sits behind the same rule as every other destructive action: a red
+text link, away from the primary.
+
+The status endpoint answers with a toast; the page reloads on success so the
+bar shows the state it is now in.
+{% endcomment %}
+{% block page_header %}
+<div class="editor-bar mb-2">
+    <a class="editor-bar-back" href="{% url 'campaigns:list' workspace_id=request.workspace.id %}">
+        <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+        Sequences
+    </a>
+    <span class="editor-bar-sep" aria-hidden="true">/</span>
+    <h1 class="editor-bar-title truncate">{{ sequence.name }}</h1>
+    {% if sequence.status == "active" %}{% include "components/status_pill.html" with tone="success" label="Active" %}
+    {% elif sequence.status == "archived" %}<span class="status-pill status-pill-archived"><span class="status-pill-dot" aria-hidden="true"></span>Archived</span>
+    {% else %}{% include "components/status_pill.html" with tone="neutral" label="Draft" %}{% endif %}
+    {% if can_edit %}
+    <div class="ml-auto flex flex-wrap items-center gap-3" x-data>
+        {% if sequence.status == "draft" %}
+        <form hx-post="{% url 'campaigns:status' workspace_id=request.workspace.id sequence_id=sequence.id %}" hx-swap="none"
+              hx-confirm="Archive this sequence? It stops accepting new subscribers and leaves the list until you restore it."
+              @htmx:after-request="if (event.detail.successful) window.location.reload()">
+            {% csrf_token %}<input type="hidden" name="status" value="archived">
+            <button type="submit" class="btn-danger-link">Archive</button>
+        </form>
+        <form hx-post="{% url 'campaigns:status' workspace_id=request.workspace.id sequence_id=sequence.id %}" hx-swap="none"
+              @htmx:after-request="if (event.detail.successful) window.location.reload()">
+            {% csrf_token %}<input type="hidden" name="status" value="active">
+            <button type="submit" class="btn-pill-primary btn-pill-sm">Activate sequence</button>
+        </form>
+        {% elif sequence.status == "active" %}
+        <form hx-post="{% url 'campaigns:status' workspace_id=request.workspace.id sequence_id=sequence.id %}" hx-swap="none"
+              @htmx:after-request="if (event.detail.successful) window.location.reload()">
+            {% csrf_token %}<input type="hidden" name="status" value="draft">
+            <button type="submit" class="btn-pill-secondary btn-pill-sm" title="Stops new subscribers. People already on it carry on.">Move back to draft</button>
+        </form>
+        {% else %}
+        <form hx-post="{% url 'campaigns:status' workspace_id=request.workspace.id sequence_id=sequence.id %}" hx-swap="none"
+              @htmx:after-request="if (event.detail.successful) window.location.reload()">
+            {% csrf_token %}<input type="hidden" name="status" value="draft">
+            <button type="submit" class="btn-pill-secondary btn-pill-sm">Restore to draft</button>
+        </form>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+<p class="page-lede mb-6 max-w-[42rem]">
+    Steps run in order. Each waits its delay from the moment the previous step actually ran,
+    then opens inside its send window.
+</p>
+{% endblock %}
+
+{% block content %}
+{% comment %}
+One column on a phone, two from `md` up — a fixed two-column grid put the
+subscriber panel in a 300px gutter on every narrow screen. Layout utilities
+rather than a component class, which is the split ground rule 9 draws: the
+design system owns component properties, utilities own layout.
+{% endcomment %}
+<div class="grid gap-6 md:grid-cols-3">
+    <div id="sequence-steps" class="md:col-span-2"
+         hx-get="{% url 'campaigns:steps' workspace_id=request.workspace.id sequence_id=sequence.id %}"
+         hx-trigger="sequenceStepsChanged from:body"
+         hx-target="this"
+         hx-swap="innerHTML">
+        {% include "campaigns/_steps.html" %}
+    </div>
+
+    <div id="sequence-subscribers" class="min-w-0"
+         hx-get="{% url 'campaigns:subscribers' workspace_id=request.workspace.id sequence_id=sequence.id %}"
+         hx-trigger="load, sequenceSubscribersChanged from:body"
+         hx-target="this"
+         hx-swap="innerHTML">
+        <p class="text-sm" style="color: var(--text-tertiary);">Loading subscribers…</p>
+    </div>
+</div>
+{% endblock %}

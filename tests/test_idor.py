@@ -1,0 +1,327 @@
+"""SECURITY-BASELINE §1: cross-tenant access answers 404, on every route."""
+
+import pytest
+from django.test import override_settings
+
+from tests.idor import (
+    NEUTRAL_KWARG_VALUES,
+    WAIVED_ROUTES,
+    UnnamedTenantRouteError,
+    UnregisteredRouteKwargError,
+    assert_cross_tenant_isolation,
+    iter_tenant_routes,
+)
+
+
+@pytest.mark.django_db
+class TestCrossTenantIsolation:
+    def test_every_tenant_route_404s_for_an_outsider(self, tenancy, other_tenancy, client_for):
+        """The attacker is an org **owner** and workspace admin in their own org.
+
+        Maximum privilege on their own side and none on the victim's, so a
+        refusal can only come from tenancy — a low-privilege outsider would be
+        stopped by their role and prove nothing.
+        """
+        assert_cross_tenant_isolation(client_for(other_tenancy.owner), tenancy)
+
+    def test_the_sweep_covers_the_routes_this_issue_added(self):
+        names = {route.name for route in iter_tenant_routes()}
+
+        assert {
+            "workspaces:dashboard",
+            "workspaces:switch",
+            "workspaces:settings",
+            "workspaces:update_settings",
+            "members:update_role",
+            "members:remove",
+            "members:manage_workspaces",
+            "members:resend_invite",
+            "members:revoke_invite",
+            "organizations:set_workspace_archived",
+        } <= names
+
+    def test_the_sweep_covers_the_notification_route(self):
+        """Issue #7's route is per-user rather than workspace-scoped, so
+        iter_tenant_routes() would skip it silently — it `continue`s on a route
+        carrying no *registered* tenant kwarg before it ever reaches the
+        unknown-kwarg check. Registering `notification_id` opts it in, and this
+        assertion is what stops a later edit from quietly opting it back out.
+        """
+        names = {route.name for route in iter_tenant_routes()}
+
+        assert "notifications:mark_read" in names
+
+    def test_no_workspace_placeholder_is_left_unswept(self):
+        """Issue #32's stub machinery, now that nothing is using it.
+
+        Every sidebar destination that was a placeholder under /w/<uuid>/ has
+        been replaced by a real app — sequences by #22, broadcasts by #23 — so
+        ``config.urls._WORKSPACE_STUBS`` is empty. The assertion is on the
+        mechanism rather than on a list of names: a placeholder is a real
+        endpoint, baseline §1 binds it like any other, and the sweep has to keep
+        reaching one the day somebody adds the next.
+        """
+        from config.urls import _WORKSPACE_STUBS
+
+        names = {route.name for route in iter_tenant_routes()}
+
+        assert {stub[1] for stub in _WORKSPACE_STUBS} <= names
+
+    def test_the_sweep_covers_the_broadcasts_app(self):
+        """Issue #23 replaced the `broadcasts` placeholder with the real app.
+
+        Every route below names a broadcast, and a broadcast names an audience —
+        so a cross-tenant read here would leak both the message and who it went
+        to. The composer's mutations are in the list too: they are the ones that
+        put work in the queue, and a placeholder never had them."""
+        names = {route.name for route in iter_tenant_routes()}
+
+        assert {
+            "broadcasts:list",
+            "broadcasts:rows",
+            "broadcasts:create",
+            "broadcasts:detail",
+            "broadcasts:counters",
+            "broadcasts:recipients",
+            "broadcasts:compose",
+            "broadcasts:wizard",
+            "broadcasts:save_channel",
+            "broadcasts:save_audience",
+            "broadcasts:audience_preview",
+            "broadcasts:save_content",
+            "broadcasts:save_schedule",
+            "broadcasts:send",
+            "broadcasts:cancel",
+            "broadcasts:duplicate",
+            "broadcasts:delete",
+        } <= names
+
+    def test_the_sweep_covers_the_campaigns_app(self):
+        """Issue #22 replaced the `sequences` placeholder with the real app.
+        Every route below names a sequence, a step or an enrollment, so the
+        sweep has to reach all of them, mutations included."""
+        names = {route.name for route in iter_tenant_routes()}
+
+        assert {
+            "campaigns:list",
+            "campaigns:create",
+            "campaigns:detail",
+            "campaigns:rename",
+            "campaigns:status",
+            "campaigns:delete",
+            "campaigns:steps",
+            "campaigns:step_create",
+            "campaigns:step_update",
+            "campaigns:step_move",
+            "campaigns:step_delete",
+            "campaigns:subscribers",
+            "campaigns:subscriber_suggest",
+            "campaigns:subscriber_add",
+            "campaigns:subscriber_remove",
+        } <= names
+
+    def test_the_sweep_covers_the_inbox_app(self):
+        """Issue #14 replaced the `inbox` placeholder with the real app. Every
+        route below names a conversation — the attacker-content surface of the
+        product — so the sweep has to reach all of them, mutations included."""
+        names = {route.name for route in iter_tenant_routes()}
+
+        assert {
+            "inbox:list",
+            "inbox:rows",
+            "inbox:thread",
+            "inbox:messages",
+            "inbox:composer",
+            "inbox:header",
+            "inbox:sidebar",
+            "inbox:send",
+            "inbox:note",
+            "inbox:assign",
+            "inbox:state",
+            "inbox:pause",
+            "inbox:stop",
+            "inbox:tags",
+            "inbox:retry",
+        } <= names
+
+    def test_the_sweep_covers_the_inbox_v2_routes(self):
+        """Issue #24 adds labels, rules, reminders and scheduled replies.
+
+        Two of these are worth naming explicitly. `inbox:bulk_label` carries no
+        conversation_id — it posts a set of them — so `label_id` being a
+        *registered* kwarg is the only thing that makes iter_tenant_routes()
+        look at it: a route with no registered kwarg is skipped before the
+        unknown-kwarg check ever runs. And the two settings pages are the first
+        inbox routes that name no conversation at all, so they would have been
+        invisible to this sweep without `label_id` and `rule_id`."""
+        names = {route.name for route in iter_tenant_routes()}
+
+        assert {
+            "inbox:add_label",
+            "inbox:remove_label",
+            "inbox:bulk_label",
+            "inbox:create_reminder",
+            "inbox:cancel_reminder",
+            "inbox:create_scheduled_reply",
+            "inbox:update_scheduled_reply",
+            "inbox:cancel_scheduled_reply",
+            "inbox:label_settings",
+            "inbox:label_rows",
+            "inbox:label_create",
+            "inbox:label_update",
+            "inbox:label_delete",
+            "inbox:rule_settings",
+            "inbox:rule_rows",
+            "inbox:rule_form",
+            "inbox:rule_save",
+            "inbox:rule_reorder",
+            "inbox:rule_test",
+            "inbox:rule_toggle",
+            "inbox:rule_delete",
+        } <= names
+
+    def test_the_sweep_covers_the_contacts_routes(self):
+        """Issue #3 replaced three of the shell placeholders with real views."""
+        names = {route.name for route in iter_tenant_routes()}
+
+        assert {
+            "contacts:list",
+            "contacts:tag_list",
+            "contacts:tag_rows",
+            "contacts:tag_create",
+            "contacts:tag_rename",
+            "contacts:tag_delete",
+            "contacts:field_list",
+            "contacts:field_rows",
+            "contacts:field_create",
+            "contacts:field_rename",
+            "contacts:field_delete",
+        } <= names
+
+    def test_the_sweep_covers_the_flows_app(self):
+        """Issue #6 replaced the `flows` placeholder with the real app, pages and
+        builder data API alike. Every one of those routes names a flow, so the
+        sweep has to reach all of them — including the API, which is exactly the
+        surface a placeholder never had."""
+        names = {route.name for route in iter_tenant_routes()}
+
+        assert {
+            "flows:list",
+            "flows:create",
+            "flows:edit",
+            "flows:rename",
+            "flows:duplicate",
+            "flows:archive",
+            "flows:restore",
+            "flows:api_detail",
+            "flows:api_publish",
+            "flows:api_offline",
+            "flows:api_rename",
+            "flows:api_trigger_enabled",
+            "flows:api_stats",
+            "flows:api_schema",
+        } <= names
+
+    def test_the_sweep_covers_the_trigger_routes(self):
+        """Issue #11's Triggers panel.
+
+        Eight partial routes and one image, all naming a flow and most naming a
+        trigger, so every one of them is a place a trigger id from another
+        workspace could be handed in. The QR endpoint is the sharpest of them:
+        it renders bytes rather than a page, and it takes a *connection* id
+        beside the trigger id, so it is the one route here that could leak one
+        tenant's deep link into another tenant's response.
+        """
+        names = {route.name for route in iter_tenant_routes()}
+
+        assert {
+            "flows:trigger_panel",
+            "flows:trigger_form",
+            "flows:trigger_create",
+            "flows:trigger_update",
+            "flows:trigger_toggle",
+            "flows:trigger_move",
+            "flows:trigger_delete",
+            "flows:trigger_qr",
+        } <= names
+
+    def test_the_sweep_covers_the_api_management_routes(self):
+        """Issue #25's two settings surfaces, which sit at different tiers.
+
+        The webhooks pages are ordinary ``/w/<uuid>/settings/`` routes.
+        ``api_keys_revoke`` is the interesting one: the API keys page is
+        org-tier (SPEC §4.1), so it carries no ``workspace_id`` and
+        RBACMiddleware never sees it — the 404 has to come from the view's own
+        ``workspace__organization=request.org`` filter. Registering
+        ``api_key_id`` is what opts that route into the sweep at all, exactly as
+        ``notification_id`` does above.
+
+        The ``/api/v1/`` operations are deliberately absent: they authenticate
+        with a bearer token rather than a session and are waived, with
+        apps/api/tests/test_isolation.py standing in. See ``_API_V1_WAIVER``.
+        """
+        names = {route.name for route in iter_tenant_routes()}
+
+        assert {
+            "api_keys_revoke",
+            "api_webhooks:list",
+            "api_webhooks:create",
+            "api_webhooks:detail",
+            "api_webhooks:update",
+            "api_webhooks:rotate_secret",
+            "api_webhooks:test",
+            "api_webhooks:delete",
+        } <= names
+
+    def test_every_waiver_states_a_reason(self):
+        assert all(reason.strip() for reason in WAIVED_ROUTES.values())
+
+
+@pytest.mark.django_db
+class TestTheSuiteActuallyCatchesLeaks:
+    """Deviation 3: prove the helper fails on a deliberately-broken view."""
+
+    @override_settings(ROOT_URLCONF="tests.broken_urls")
+    def test_a_leaky_view_is_reported(self, tenancy, other_tenancy, client_for):
+        with pytest.raises(AssertionError) as caught:
+            assert_cross_tenant_isolation(client_for(other_tenancy.owner), tenancy, urlconf="tests.broken_urls")
+
+        message = str(caught.value)
+        assert "leaky" in message
+        assert "200" in message
+
+    def test_an_unregistered_tenant_kwarg_is_an_error_not_a_skip(self, monkeypatch):
+        """A new endpoint must extend the registry, not slip past it.
+
+        One kwarg is withdrawn rather than the whole table: which route trips
+        first depends on URL-conf order, and naming the kwarg we removed is what
+        makes the assertion mean something. ``index`` belongs to ``inbox:media``,
+        which also takes a registered ``message_id`` — so the route is reached
+        rather than skipped as untenanted.
+        """
+        monkeypatch.setattr(
+            "tests.idor.NEUTRAL_KWARG_VALUES",
+            {key: value for key, value in NEUTRAL_KWARG_VALUES.items() if key != "index"},
+        )
+
+        with pytest.raises(UnregisteredRouteKwargError) as caught:
+            iter_tenant_routes()
+
+        assert "index" in str(caught.value)
+        assert "inbox:media" in str(caught.value)
+
+    def test_an_unnamed_tenant_route_is_an_error_not_a_skip(self):
+        """A route nothing reverses is exactly the kind that gets registered
+        without a name; skipping it would be the one silent hole in a mechanism
+        whose whole point is that nothing escapes quietly."""
+        with (
+            override_settings(ROOT_URLCONF="tests.unnamed_urls"),
+            pytest.raises(UnnamedTenantRouteError) as caught,
+        ):
+            iter_tenant_routes("tests.unnamed_urls")
+
+        assert "no name=" in str(caught.value)
+
+    def test_an_unnamed_route_without_tenant_ids_is_fine(self):
+        """Only tenant-addressable routes have to be reversible here."""
+        assert iter_tenant_routes("tests.unnamed_urls_harmless") == []

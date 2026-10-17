@@ -1,0 +1,1306 @@
+﻿"""The app shell: base.html, the toast host, the layouts and the error pages."""
+
+import re
+from pathlib import Path
+
+import pytest
+
+from tests.support import make_connection
+
+NONCE_ATTR_RE = re.compile(r'nonce="([A-Za-z0-9+/=]+)"')
+INLINE_SCRIPT_RE = re.compile(r"<(script|style)(?![^>]*\bsrc=)([^>]*)>", re.I)
+
+
+@pytest.fixture
+def tenant_client(tenancy, client_for):
+    """A signed-in owner with a workspace, so base.html renders the shell.
+
+    Uses issue #31's `tenancy` fixture rather than building a user here: the
+    shell's nav is workspace-scoped now, so a user without an organization
+    renders a shell with no navigation at all.
+    """
+    return client_for(tenancy.owner)
+
+
+@pytest.fixture
+def shell_url(tenancy):
+    """One representative shell page: the workspace dashboard."""
+    return f"/w/{tenancy.workspace.id}/"
+
+
+@pytest.fixture
+def shell_urls(tenancy):
+    """Pages that render the full shell, across both settings layouts."""
+    ws = tenancy.workspace.id
+    return [
+        "/ui/",
+        f"/w/{ws}/",
+        f"/w/{ws}/inbox/",
+        "/accounts/settings/",
+        "/organization/settings/",
+        f"/w/{ws}/settings/tags/",
+    ]
+
+
+@pytest.mark.django_db
+class TestPublicEntryPoint:
+    """CI boots the compose stack from a checkout with no .env and runs
+    `curl -fsSL / | grep -q "Quikro"`.
+
+    Issue #31 made `/` a router that sends anonymous visitors to the login
+    page, and added `-L` so the assertion follows that redirect. So the string
+    has to survive on the login page — which this workstream restyles — rather
+    than on a landing page of its own.
+    """
+
+    def test_the_root_sends_anonymous_visitors_to_login(self, client):
+        response = client.get("/")
+
+        assert response.status_code == 302
+        assert response.headers["Location"] == "/accounts/login/"
+
+    def test_the_login_page_carries_the_product_name(self, client):
+        """What CI's grep actually lands on after following the redirect."""
+        assert b"Quikro" in client.get("/accounts/login/").content
+
+    def test_following_the_redirect_reaches_a_200(self, client):
+        """`curl -fsSL` fails on a non-2xx even after following."""
+        assert client.get("/", follow=True).status_code == 200
+
+    def test_the_login_page_uses_the_auth_layout_not_the_shell(self, client):
+        body = client.get("/accounts/login/").content.decode()
+
+        assert "auth-card" in body
+        assert "<aside" not in body
+
+
+@pytest.mark.django_db
+class TestContentSecurityPolicy:
+    def test_every_inline_script_and_style_carries_a_nonce(self, tenant_client, shell_urls):
+        """SECURITY-BASELINE §8. script-src has no 'unsafe-inline', so an inline
+        block without a nonce is silently dead in the browser."""
+        for url in shell_urls:
+            body = tenant_client.get(url).content.decode()
+            for tag, attrs in INLINE_SCRIPT_RE.findall(body):
+                assert "nonce=" in attrs, f"<{tag}> without a nonce on {url}: {attrs[:120]}"
+
+    def test_the_anonymous_login_page_still_has_a_nonced_inline_script(self, client):
+        """The toast host sits outside the authenticated/anonymous branch, which
+        is what keeps a nonce on every page including the login page — and what
+        test_csp.py's nonce assertion lands on."""
+        body = client.get("/accounts/login/").content.decode()
+
+        assert NONCE_ATTR_RE.search(body)
+
+    def test_no_inline_event_handler_attributes_anywhere(self, tenant_client, shell_urls):
+        """That is what the CSP-safe hover utility classes exist for."""
+        for url in shell_urls:
+            body = tenant_client.get(url).content.decode().lower()
+            for handler in ["onclick=", "onload=", "onerror=", "onmouseover=", "onsubmit=", "onchange="]:
+                assert handler not in body, f"{handler} on {url}"
+
+    @pytest.mark.parametrize("origin", ["jsdelivr", "unpkg", "cdnjs", "fonts.googleapis", "//cdn."])
+    def test_no_cdn_origin_survives_in_any_rendered_page(self, tenant_client, shell_urls, origin):
+        """Deviation 6. Includes HTML comments — a note explaining that a CDN was
+        removed still puts that hostname in the response."""
+        for url in [*shell_urls, "/no-such-page"]:
+            assert origin not in tenant_client.get(url).content.decode(), f"{origin} on {url}"
+
+    def test_every_script_src_is_same_origin(self, tenant_client, shell_urls):
+        for url in shell_urls:
+            for src in re.findall(r'<script[^>]*\bsrc="([^"]+)"', tenant_client.get(url).content.decode()):
+                assert src.startswith("/static/"), src
+
+
+@pytest.mark.django_db
+class TestTheSidebar:
+    """The sidebar collapses, so the anti-flash mechanism is back — whole.
+
+    It can start a page at either of two widths, and three pieces have to ship
+    together to stop the wrong one flashing: a pre-paint script reading
+    localStorage, a `.sidebar-initial` block mirroring the collapsed width in
+    plain CSS, and an x-init handover on <aside> that strips both markers when
+    Alpine takes over. A half-restored mechanism is worse than either state —
+    leg 1 without leg 2 flashes 240px at every collapsed user, leg 2 without
+    leg 3 freezes the sidebar at its pre-paint width forever — so this asserts
+    all three, and asserts them at source level because a rendered body cannot
+    see whether the handover actually removes anything.
+    """
+
+    def test_all_three_legs_of_the_anti_flash_contract_are_present(self, tenant_client, shell_urls, shell_url):
+        body = tenant_client.get(shell_url).content.decode()
+
+        for leg in ["sidebarCollapsed", "sidebar-is-collapsed", "sidebar-initial"]:
+            assert leg in body, f"{leg} went missing and took a third of the mechanism with it"
+
+    def test_each_leg_does_the_job_its_partner_assumes(self):
+        """The rendered page shows the three names; only the source shows that
+        each one is wired to the other two."""
+        root = Path(__file__).parents[3] / "templates"
+        base = (root / "base.html").read_text()
+        sidebar = (root / "partials" / "_app_sidebar.html").read_text()
+
+        # Leg 1: read before paint, stamped on <html>.
+        assert "localStorage.getItem('sidebarCollapsed')" in base
+        assert "document.documentElement.classList.add('sidebar-is-collapsed')" in base
+        # Leg 2: the mirror keyed on what leg 1 stamps, and only the width —
+        # every other collapsed rule lives beside its real counterpart.
+        assert "html.sidebar-is-collapsed .sidebar-initial { width: 60px; }" in base
+        # Leg 3: the handover strips both markers, so the Tailwind width
+        # utilities Alpine binds start applying at exactly that moment.
+        assert "$el.classList.remove('sidebar-initial')" in sidebar
+        assert "document.documentElement.classList.remove('sidebar-is-collapsed')" in sidebar
+
+    def test_the_collapse_is_persisted_rather_than_reset_on_every_page(self, tenant_client, shell_urls, shell_url):
+        """The write is a call into the nonced head script, not an inline `try`.
+
+        This used to assert the inline form, which was a SyntaxError to Alpine:
+        the string was in the page and the effect never ran. Whether a
+        directive compiles is tests/js/alpine-directives.test.ts's job; this
+        only pins the wiring between the two halves.
+        """
+        body = tenant_client.get(shell_url).content.decode()
+
+        assert "localStorage.setItem('sidebarCollapsed'" in body
+        assert "window.__bbStoreSidebarCollapsed = function" in body
+        assert 'x-effect="window.__bbStoreSidebarCollapsed(sidebarCollapsed)"' in body
+
+    def test_the_collapse_never_reaches_inside_a_popover(self):
+        """A row rule scoped to the whole sidebar hits the switcher's panel.
+
+        The workspace switcher draws its options with .sidebar-nav-item, and
+        its panel is an absolutely-positioned child of .sidebar-ws — inside the
+        element that carries .sidebar-collapsed. So an unscoped
+        `.sidebar-collapsed .sidebar-nav-label { display: none }` hid every
+        workspace NAME in it: the panel kept the 220px width it is given for
+        exactly this state and showed a column of bare marks, with "New
+        workspace" reduced to a lone plus sign.
+
+        Scoping every row rule to .sidebar-nav or .sidebar-footer fixes it and
+        keeps fixing it for the next popover someone puts in the sidebar. Read
+        from the compiled bundle rather than the source so a selector that only
+        Tailwind emits cannot slip past.
+        """
+        from django.contrib.staticfiles import finders
+
+        bundle = Path(finders.find("css/dist/styles.css")).read_text()
+
+        # Every selector that collapses a row, in the order the minifier left
+        # them. Each must name the subtree it applies to.
+        row_selectors = re.findall(r"\.sidebar-collapsed [^,{]*\.sidebar-nav-(?:item|label)\b", bundle)
+
+        assert row_selectors, "the collapsed row rules vanished entirely"
+        for selector in row_selectors:
+            assert ".sidebar-nav " in selector or ".sidebar-footer " in selector, selector
+
+    def test_the_collapsed_rules_keep_their_pre_paint_twin(self):
+        """Leg 2 mirrors leg 1's class, and a rule added to one and not the
+        other is a flash nobody sees in review. Counting the pair is the
+        cheapest way to notice a single-sided edit."""
+        from django.contrib.staticfiles import finders
+
+        bundle = Path(finders.find("css/dist/styles.css")).read_text()
+
+        alpine_side = len(re.findall(r"\.sidebar-collapsed [^,{]+", bundle))
+        prepaint_side = len(re.findall(r"html\.sidebar-is-collapsed \.sidebar-initial [^,{]+", bundle))
+
+        assert alpine_side == prepaint_side, (
+            f"{alpine_side} collapsed selectors but {prepaint_side} pre-paint mirrors — "
+            "every collapsed rule ships in both halves or neither"
+        )
+
+    def test_the_cloak_rule_survives_on_every_page(self, tenant_client, shell_urls, shell_url, client):
+        """The one line of the old pre-paint <style> that is still load-bearing.
+
+        The workspace switcher, the user menu and the bell panel are all Alpine
+        dropdowns, and the auth templates use Alpine too. Without this rule every
+        one of them renders open on first paint — which is why it is asserted on
+        an anonymous page as well as a signed-in one.
+        """
+        for body in [
+            tenant_client.get(shell_url).content.decode(),
+            client.get("/accounts/login/").content.decode(),
+        ]:
+            assert "[x-cloak]" in body
+
+    def test_the_sidebar_renders_its_rows(self, tenant_client, shell_urls, shell_url):
+        body = tenant_client.get(shell_url).content.decode()
+        sidebar = body[body.index("<aside") : body.index("</aside>")]
+
+        assert "sidebar-nav-item" in sidebar
+        # Labels track the design, keys track the route — see MAIN_NAV.
+        for label in ["Home", "Inbox", "Flows", "Broadcasts", "Contacts"]:
+            assert f">{label}</span>" in sidebar, label
+
+    def test_notifications_is_a_row_again_and_sequences_still_is_not(self, tenant_client, shell_urls, shell_url):
+        """Notifications came back when the header it had moved to was deleted:
+        the sidebar is the surface on every page now, and one row carries both
+        the count and the panel the appbar bell used to open. Sequences did not
+        — it is still a tab on the flows page, and a row for it here would be a
+        second way to reach one destination."""
+        body = tenant_client.get(shell_url).content.decode()
+        sidebar = body[body.index("<aside") : body.index("</aside>")]
+
+        assert ">Notifications</span>" in sidebar
+        assert ">Sequences</span>" not in sidebar
+
+    def test_the_footer_holds_no_nav_rows(self, tenant_client, shell_urls, shell_url):
+        """It held Library and Settings, in a group pinned below the scrolling
+        nav. Both are gone — Settings from the product's chrome entirely (the
+        account menu below and the switcher above both lead there), Library into
+        the workspace settings nav — so the footer is the account block and the
+        collapse toggle.
+
+        Asserted on the rendered footer, not on MAIN_NAV: the group came back
+        once already, and it could come back as an include rather than as a
+        group.
+        """
+        body = tenant_client.get(shell_url).content.decode()
+        sidebar = body[body.index("<aside") : body.index("</aside>")]
+        footer = sidebar[sidebar.index('class="sidebar-footer"') :]
+
+        assert "sidebar-nav-item" not in footer
+        # Matched on the label class a nav row uses, because the account menu
+        # below still carries a Settings row — as a .sidebar-menu-row, which is
+        # the point: one way in from the menu, none from the nav.
+        assert 'sidebar-nav-label">Library' not in sidebar
+        assert 'sidebar-nav-label">Settings' not in sidebar
+        assert "sidebar-menu-row" in sidebar
+
+    def test_the_sidebar_survives_a_missing_optional_app(self, tenant_client, shell_urls, shell_url):
+        """apps.analytics is an optional install, so the Insights row reverses
+        to "#" and _render_nav drops it. The nav must not assume a fixed number
+        of rows — it is laid out with flex for exactly this."""
+        body = tenant_client.get(shell_url).content.decode()
+        sidebar = body[body.index("<aside") : body.index("</aside>")]
+
+        assert 'href="#"' not in sidebar
+
+    def test_no_element_combines_x_show_with_a_display_none_utility(self):
+        """`class="hidden" x-show="..."` is a trap that cannot be seen in a
+        rendered page: Alpine shows an element by clearing its inline display,
+        after which the utility's own display:none reasserts itself and the
+        element stays invisible forever.
+
+        The shell's dropdowns moved into partials, so those are read too — the
+        moment this stopped covering them would be the moment new dropdowns
+        were added.
+        """
+        root = Path(__file__).parents[3] / "templates"
+        sources = [root / "base.html", *sorted((root / "partials").glob("_app_*.html"))]
+
+        offenders = []
+        for path in sources:
+            html = path.read_text()
+            for tag in re.findall(r"<[a-z]+\s[^>]*x-show=[^>]*>", html, re.S):
+                classes = re.search(r'class="([^"]*)"', tag)
+                # Token-exact: a responsive variant like `lg:hidden` is fine.
+                # Only an unconditional `hidden` is a trap.
+                if classes and "hidden" in classes.group(1).split():
+                    offenders.append(f"{path.name}: {tag}")
+
+        assert not offenders, f"x-show on an element that a utility class keeps hidden: {offenders}"
+
+
+@pytest.mark.django_db
+class TestTheChannelBlockInTheSidebar:
+    """What a workspace has connected, and what it could connect next.
+
+    The data is tested in apps/common/tests/test_context_processors.py; this is
+    the markup: the block is in the nav, its rows are nav rows, and the rail
+    keeps the channels while dropping the reading matter.
+    """
+
+    @pytest.fixture
+    def connected(self, tenancy):
+        return make_connection(tenancy.workspace, display_name="Acme support bot")
+
+    def test_a_connected_channel_is_a_row_in_the_nav(self, tenant_client, shell_url, connected):
+        body = tenant_client.get(shell_url).content.decode()
+        sidebar = body[body.index("<aside") : body.index("</aside>")]
+
+        assert ">Channels</div>" in sidebar
+        assert ">Acme support bot</span>" in sidebar
+        # The platform's own chip, through the filter that guarantees a class
+        # some stylesheet actually defines — never `pi-{{ key }}`.
+        assert "pi-chip pi-telegram" in sidebar
+        assert f"/settings/channels/{connected.pk}/" in sidebar
+
+    def test_a_channel_that_is_not_carrying_messages_says_so(self, tenant_client, shell_url, tenancy):
+        """A revoked channel gets the badge; a disabled one is drained of
+        colour. Both read as "not working" without opening a settings page."""
+        make_connection(tenancy.workspace, platform="instagram", status="needs_reauth")
+        make_connection(tenancy.workspace, platform="sms", status="disabled")
+
+        body = tenant_client.get(shell_url).content.decode()
+        sidebar = body[body.index("<aside") : body.index("</aside>")]
+
+        assert "sidebar-channel-flag" in sidebar
+        assert "sidebar-channel-mark is-off" in sidebar
+        assert "needs reconnecting" in sidebar
+        assert "turned off" in sidebar
+
+    def test_the_row_for_the_channel_you_are_reading_is_marked(self, tenant_client, tenancy, connected):
+        """Same active convention as every other nav row, `aria-current`
+        included — without it the shell says nothing about where you are."""
+        url = f"/w/{tenancy.workspace.id}/settings/channels/{connected.pk}/"
+
+        body = tenant_client.get(url).content.decode()
+        sidebar = body[body.index("<aside") : body.index("</aside>")]
+
+        assert 'class="sidebar-nav-item active"' in sidebar
+        assert 'aria-current="page"' in sidebar
+
+    def test_the_platforms_you_have_not_connected_are_offered(self, tenant_client, shell_url, connected):
+        body = tenant_client.get(shell_url).content.decode()
+        sidebar = body[body.index("<aside") : body.index("</aside>")]
+
+        assert ">Connect channels</div>" in sidebar
+        assert ">WhatsApp</span>" in sidebar
+        assert "sidebar-connect-plus" in sidebar
+        assert ">More channels</span>" in sidebar
+        # Telegram is connected, so it is in the list above and not in this one.
+        assert sidebar.count(">Telegram</span>") == 0
+
+    def test_only_the_first_three_platforms_are_offered(self, tenant_client, shell_url):
+        """The offer is a nudge under somebody's own channels, not the whole
+        registry: six chips of platforms you do not have is a wall.
+
+        Counted by the + badge, which only a connectable row carries — "More
+        channels" has the plain glyph and stays whatever the list is doing.
+        """
+        body = tenant_client.get(shell_url).content.decode()
+        sidebar = body[body.index("<aside") : body.index("</aside>")]
+
+        assert sidebar.count("sidebar-connect-plus") == 3
+        assert ">Telegram</span>" in sidebar
+        assert ">Instagram</span>" in sidebar
+        assert ">Facebook Messenger</span>" in sidebar
+        # The other three are waiting, not gone — "More channels" is the way
+        # to them until one of the first three is connected.
+        assert ">WhatsApp</span>" not in sidebar
+        assert ">SMS</span>" not in sidebar
+        assert ">More channels</span>" in sidebar
+
+    def test_connecting_one_of_the_three_brings_the_next_one_up(self, tenant_client, shell_url, tenancy):
+        """The list refills itself. Connecting a platform takes it off
+        `connectable`, so the fourth moves into the gap and the offer stays
+        three long — otherwise it would shrink to nothing while three
+        platforms nobody has were never once offered."""
+        make_connection(tenancy.workspace, platform="telegram")
+
+        body = tenant_client.get(shell_url).content.decode()
+        sidebar = body[body.index("<aside") : body.index("</aside>")]
+
+        assert sidebar.count("sidebar-connect-plus") == 3
+        # Instagram and Messenger stay put; WhatsApp is the one promoted.
+        assert ">WhatsApp</span>" in sidebar
+        assert ">SMS</span>" not in sidebar
+
+    def test_the_offer_goes_when_there_is_nothing_left_to_connect(self, tenant_client, shell_url, tenancy):
+        """A workspace running every platform has nothing to be sold, and the
+        heading, the rows and "More channels" go together — a lone "More
+        channels" under an empty heading is a link to a page of things you
+        already have."""
+        from apps.channels.registry import CONNECT_ROUTES
+
+        for platform in CONNECT_ROUTES:
+            make_connection(tenancy.workspace, platform=platform)
+
+        body = tenant_client.get(shell_url).content.decode()
+        sidebar = body[body.index("<aside") : body.index("</aside>")]
+
+        assert ">Connect channels</div>" not in sidebar
+        assert "sidebar-connect-plus" not in sidebar
+        assert ">More channels</span>" not in sidebar
+        # The channels themselves are still listed above it.
+        assert ">Channels</div>" in sidebar
+
+    def test_a_member_who_cannot_connect_a_channel_sees_no_block(self, client_for, tenancy, shell_url, connected):
+        body = client_for(tenancy.user_for("agent")).get(shell_url).content.decode()
+        sidebar = body[body.index("<aside") : body.index("</aside>")]
+
+        assert ">Channels</div>" not in sidebar
+        assert ">Connect channels</div>" not in sidebar
+        # And the rest of the sidebar is untouched.
+        assert ">Inbox</span>" in sidebar
+
+    def test_the_rail_keeps_the_channels_and_drops_the_offer(self):
+        """A connected channel is a glyph like any other nav row and survives
+        at 60px. The "Connect channels" list does not: six chips of platforms
+        you do NOT have, under a heading that is itself hidden, is a puzzle.
+
+        Read from the compiled bundle, and both halves of the collapse contract
+        are asserted — a rule written for the Alpine class alone flashes on
+        every load for anyone whose sidebar starts collapsed.
+        """
+        from django.contrib.staticfiles import finders
+
+        bundle = Path(finders.find("css/dist/styles.css")).read_text()
+
+        for marker in [".sidebar-connect", ".sidebar-section-label-wrap"]:
+            assert f".sidebar-collapsed {marker}" in bundle, marker
+            assert f"html.sidebar-is-collapsed .sidebar-initial {marker}" in bundle, marker
+
+
+@pytest.mark.django_db
+class TestTheNavBadge:
+    def test_the_badge_markup_exists_for_a_non_zero_count(self):
+        """Pairs with the allowance above: the class is unreachable today only
+        because every badge count is 0, not because nothing renders it.
+
+        Through partials/_sidebar_items.html, which is the one nav renderer
+        left — the settings column had a second copy of this loop until its
+        rows moved into the sidebar.
+        """
+        from django.template import Context, Template
+
+        html = Template('{% include "partials/_sidebar_items.html" %}').render(
+            Context(
+                {
+                    "groups": [
+                        {
+                            "label": "",
+                            "items": [
+                                {
+                                    "key": "inbox",
+                                    "label": "Inbox",
+                                    "icon": "inbox",
+                                    "url": "/inbox/",
+                                    "active": False,
+                                    "badge": 7,
+                                    "badge_slot": True,
+                                },
+                            ],
+                        }
+                    ]
+                }
+            )
+        )
+
+        assert 'class="sidebar-badge"' in html
+        assert ">7<" in html
+
+    def test_a_zero_badge_renders_nothing_rather_than_a_zero(self):
+        from django.template import Context, Template
+
+        html = Template('{% include "partials/_sidebar_items.html" %}').render(
+            Context(
+                {
+                    "groups": [
+                        {
+                            "label": "",
+                            "items": [
+                                {
+                                    "key": "inbox",
+                                    "label": "Inbox",
+                                    "icon": "inbox",
+                                    "url": "/inbox/",
+                                    "active": False,
+                                    "badge": 0,
+                                    "badge_slot": True,
+                                },
+                            ],
+                        }
+                    ]
+                }
+            )
+        )
+
+        assert "sidebar-badge" not in html
+        assert ">0<" not in html
+
+    def test_a_zero_badge_still_renders_the_slot_an_out_of_band_swap_aims_at(self):
+        """The other half of the contract above, and the reason the badge is
+        `hidden` rather than absent: the owning app keeps its count live by id
+        — notifications polls one every 60s — and htmx logs
+        `htmx:oobErrorNoTarget` for a swap whose target is not in the document.
+        A zero badge has to show nothing while still *being* somewhere.
+        """
+        from django.template import Context, Template
+
+        html = Template('{% include "partials/_sidebar_items.html" %}').render(
+            Context(
+                {
+                    "groups": [
+                        {
+                            "label": "",
+                            "items": [
+                                {
+                                    "key": "inbox",
+                                    "label": "Inbox",
+                                    "icon": "inbox",
+                                    "url": "/inbox/",
+                                    "active": False,
+                                    "badge": 0,
+                                    "badge_slot": True,
+                                },
+                            ],
+                        }
+                    ]
+                }
+            )
+        )
+
+        slot = re.search(r'<span id="nav-badge-inbox"[^>]*>(.*?)</span>', html)
+        # Scoped to the slot: _nav_icon.html gives every row an
+        # `aria-hidden="true"` svg, so `"hidden" in html` is true of any nav at
+        # all and would pass with the attribute deleted.
+        assert slot, "no slot for the swap to land on"
+        assert slot.group(1) == ""
+        assert "hidden" in slot.group(0)
+
+    def test_a_row_no_app_badges_gets_no_slot_at_all(self):
+        """An id nothing ever swaps is dead weight on every page, and a
+        duplicate of one that does is a swap landing somewhere arbitrary — a
+        list worth keeping to the rows an app actually owns."""
+        from django.template import Context, Template
+
+        html = Template('{% include "partials/_sidebar_items.html" %}').render(
+            Context(
+                {
+                    "groups": [
+                        {
+                            "label": "",
+                            "items": [
+                                {
+                                    "key": "contacts",
+                                    "label": "Contacts",
+                                    "icon": "contacts",
+                                    "url": "/contacts/",
+                                    "active": False,
+                                    "badge": 0,
+                                    "badge_slot": False,
+                                },
+                            ],
+                        }
+                    ]
+                }
+            )
+        )
+
+        assert "nav-badge-" not in html
+
+
+@pytest.mark.django_db
+class TestTheWorkspaceSettingsAreReachable:
+    """The concern the old sidebar dropdown existed for, against the new shell.
+
+    Before #130 the nine workspace-settings pages were reachable only by typing
+    a URL, and the fix then was a "Workspace settings" link in the sidebar's
+    workspace switcher. The redesign removed that sidebar: the nav's Settings
+    row lands on the account settings page, and the settings nav is one list
+    gated per row rather than two filtered ones. That is a different answer to
+    the same question, so the guard moves rather than going away — what must
+    stay true is that the pages have *an* entry point that is not the URL bar.
+
+    The switcher's link is back as well, matching Studio's panel. It is now the
+    second way in rather than the only one, and both are asserted here: the
+    question this class asks is whether the pages are reachable, and one entry
+    point surviving while the other rots is exactly the state that would answer
+    it "yes" while a workspace admin cannot find them.
+    """
+
+    def test_the_settings_page_reaches_the_workspace_section(self, tenancy, client_for):
+        from django.urls import reverse
+
+        html = client_for(tenancy.owner).get(reverse("accounts:settings")).content.decode()
+
+        assert f'href="/w/{tenancy.workspace.id}/settings/channels/"' in html
+        assert "Channels" in html
+
+    def test_a_role_without_the_key_is_not_offered_the_row(self, tenancy, client_for):
+        """Gated per row on the key its own view enforces, so a control never
+        renders for somebody the page behind it would refuse."""
+        from django.urls import reverse
+
+        html = client_for(tenancy.user_for("viewer")).get(reverse("accounts:settings")).content.decode()
+
+        assert f'href="/w/{tenancy.workspace.id}/settings/channels/"' not in html
+
+    def test_the_switcher_offers_this_workspace_s_own_settings(self, tenancy, client_for, shell_url):
+        html = client_for(tenancy.owner).get(shell_url).content.decode()
+
+        assert f'href="/w/{tenancy.workspace.id}/settings/"' in html
+        assert "Workspace settings" in html
+
+    def test_the_switcher_row_is_gated_on_the_key_its_page_enforces(self, tenancy, client_for, shell_url):
+        """Same rule as the settings nav above, on the row that is one click
+        from every page in the product rather than one click from one page."""
+        html = client_for(tenancy.user_for("viewer")).get(shell_url).content.decode()
+
+        assert f'href="/w/{tenancy.workspace.id}/settings/"' not in html
+        assert "Workspace settings" not in html
+
+    def test_the_glyph_sizes_are_pinned_so_an_ambient_context_var_cannot_move_them(self, tenant_client, shell_url):
+        """`partials/_nav_icon.html` takes an optional `icon_size`, and
+        `{% include %}` without `only` inherits the whole parent context — so a
+        view adding a `size` key would silently resize every glyph in the shell
+        if the parameter were named `size`. It is not, deliberately; this pins
+        the default so a change to `default:18` cannot pass unnoticed.
+        """
+        html = tenant_client.get(shell_url).content.decode()
+
+        assert 'class="flex-shrink-0" width="18" height="18"' in html
+
+    def test_every_nav_row_names_a_glyph_the_partial_draws(self):
+        """`partials/_nav_icon.html` draws a neutral dot for a name it does not
+        know — deliberately visible, but a dot in a row of Lucide glyphs reads
+        as a design choice in review, not as a typo. Every nav the sidebar and
+        the tab strip render is checked against the partial's own branches."""
+        from apps.common.context_processors import FLOWS_TABS, MAIN_NAV, SETTINGS_NAV
+
+        source = (Path(__file__).parents[3] / "templates/partials/_nav_icon.html").read_text()
+        drawn = set(re.findall(r'name == "([a-z_]+)"', source))
+        asked = {item.icon for nav in (MAIN_NAV, SETTINGS_NAV, FLOWS_TABS) for group in nav for item in group.items}
+
+        assert asked - drawn == set()
+
+
+@pytest.mark.django_db
+class TestTheAccountMenu:
+    """The footer's menu, ported from Studio's organisation panel.
+
+    It is the only surface in the shell that names the organisation at all —
+    the top of the sidebar names the *workspace*, and nothing on a page names
+    the org — which is what the identity block is for and why it is asserted
+    rather than left to the styling.
+    """
+
+    def test_it_names_the_organisation_under_the_email(self, tenancy, client_for, shell_url):
+        html = client_for(tenancy.owner).get(shell_url).content.decode()
+
+        assert f'<span class="sidebar-menu-identity-org">{tenancy.organization.name}</span>' in html
+
+    def test_it_links_the_team_for_an_ordinary_member(self, tenancy, client_for, shell_url):
+        """``members:list`` is gated at ``org_role="member"``, which everybody
+        in an organisation holds — so the control is offered to all of them,
+        not only to the owner whose menu it was drawn against."""
+        from django.urls import reverse
+
+        members_url = reverse("members:list")
+        html = client_for(tenancy.user_for("viewer")).get(shell_url).content.decode()
+
+        assert f'href="{members_url}"' in html
+
+    def test_signing_out_is_still_a_post(self, tenancy, client_for, shell_url):
+        """Studio's row is an ``<a>`` to /accounts/logout/ — a GET that ends the
+        session, which one prefetching browser or one crawler is enough to
+        fire. Copying the styling was never a reason to copy that."""
+        html = client_for(tenancy.owner).get(shell_url).content.decode()
+
+        assert '<form method="post" action="/accounts/logout/">' in html
+        assert 'href="/accounts/logout/"' not in html
+
+
+@pytest.mark.django_db
+class TestTheShellIsWellNested:
+    """One stray `</div>` closes the wrapper that owns the shell's Alpine state.
+
+    Everything below that point falls out of scope: `x-show` throws
+    "sidebarCollapsed is not defined", both halves of the sidebar footer stay
+    hidden, and the nav and the page's own content render outside the flex row
+    that lays them out — a blank screen from a single character.
+
+    Nothing else in this suite notices, because every assertion here is a
+    substring of a string the template produces either way.
+    """
+
+    def test_the_wrapper_that_owns_the_alpine_state_closes_last(self, tenant_client, shell_urls):
+        for url in shell_urls:
+            body = tenant_client.get(url).content.decode()
+            if '<div class="flex h-screen' not in body:
+                continue
+            shell = body[body.index('<div class="flex h-screen') :]
+
+            depth = 0
+            for match in re.finditer(r"<(/?)div\b[^>]*>", shell):
+                depth += -1 if match.group(1) else 1
+                if depth == 0:
+                    break
+
+            remaining = shell[match.end() :]
+            for stranded in ("<aside", "<main", "sidebar-nav"):
+                assert stranded not in remaining, f"{url}: {stranded} fell outside the Alpine wrapper"
+
+
+@pytest.mark.django_db
+class TestToastHost:
+    def test_the_host_is_on_every_page_with_no_per_page_include(self, tenant_client, shell_urls):
+        """Deviation 2. Studio's host is a partial each template must remember."""
+        for url in shell_urls:
+            assert 'id="bb-toast-host"' in tenant_client.get(url).content.decode(), url
+
+    def test_the_host_is_present_for_anonymous_visitors_too(self, client):
+        assert 'id="bb-toast-host"' in client.get("/accounts/login/").content.decode()
+
+    def test_it_listens_for_both_hx_trigger_toasts_and_htmx_errors(self, tenant_client, shell_urls, shell_url):
+        body = tenant_client.get(shell_url).content.decode()
+
+        assert "addEventListener('showToast'" in body
+        assert "addEventListener('htmx:responseError'" in body
+
+    def test_server_text_is_written_with_textcontent_only(self, tenant_client, shell_urls, shell_url):
+        """SECURITY-BASELINE §2: toast bodies carry platform-supplied content."""
+        body = tenant_client.get(shell_url).content.decode()
+
+        assert ".textContent = detail.title" in body
+        assert "innerHTML = detail" not in body
+
+    def test_error_bodies_are_parsed_inertly(self, tenant_client, shell_urls, shell_url):
+        body = tenant_client.get(shell_url).content.decode()
+
+        assert "DOMParser()" in body
+
+    def test_a_flattened_error_page_is_not_shown_verbatim(self, tenant_client, shell_urls, shell_url):
+        """Under DEBUG a Django technical 500 page flattens to the exception and
+        its traceback. Studio's handler renders whatever it extracts."""
+        body = tenant_client.get(shell_url).content.decode()
+
+        assert "message.length > 300" in body
+        assert "Something went wrong. Please try again." in body
+
+    def test_the_opt_outs_survive_the_merge(self, tenant_client, shell_urls, shell_url):
+        body = tenant_client.get(shell_url).content.decode()
+
+        assert "data-no-error-toast" in body
+        assert "data-inline-error" in body
+
+    def test_init_is_idempotent_because_htmx_reruns_swapped_in_scripts(self, tenant_client, shell_urls, shell_url):
+        assert "__bbToastInit" in tenant_client.get(shell_url).content.decode()
+
+    def test_the_host_is_not_itself_a_live_region(self, tenant_client, shell_urls, shell_url):
+        """Each toast carries its own role, which IS a live region. Announcing
+        the host as well made a screen reader read every toast twice."""
+        body = tenant_client.get(shell_url).content.decode()
+
+        assert '<div id="bb-toast-host"></div>' in body
+
+    def test_errors_interrupt_and_quiet_tones_do_not(self, tenant_client, shell_urls, shell_url):
+        """Politeness per tone is the reason the roles live on the toasts
+        rather than as one aria-live on the container."""
+        body = tenant_client.get(shell_url).content.decode()
+
+        assert "tone === 'error' ? 'alert' : 'status'" in body
+
+    def test_a_view_fires_a_toast_over_hx_trigger(self, client):
+        import json
+
+        response = client.post("/ui/toast/", {"tone": "warn"})
+
+        assert response.status_code == 204
+        assert json.loads(response.headers["HX-Trigger"])["showToast"]["tone"] == "warn"
+
+    def test_an_unknown_tone_falls_back_rather_than_rendering_unstyled(self, client):
+        import json
+
+        response = client.post("/ui/toast/", {"tone": "../../etc/passwd"})
+
+        assert json.loads(response.headers["HX-Trigger"])["showToast"]["tone"] == "info"
+
+    def test_the_toast_endpoint_rejects_get(self, client):
+        assert client.get("/ui/toast/").status_code == 405
+
+
+@pytest.mark.django_db
+class TestCsrfWiring:
+    def test_htmx_requests_get_the_token_injected(self, tenant_client, shell_urls, shell_url):
+        body = tenant_client.get(shell_url).content.decode()
+
+        assert "htmx:configRequest" in body
+        assert "X-CSRFToken" in body
+        assert "csrfmiddlewaretoken" in body
+
+    def test_the_token_is_gated_on_a_same_origin_check(self, tenant_client, shell_urls, shell_url):
+        """htmx will issue a cross-origin request happily, and an unconditional
+        header hands the session's CSRF token to whatever host an hx-* points
+        at. From Layer 3 this template renders platform-supplied content
+        (SECURITY-BASELINE §2), so the guard belongs here once rather than in
+        every surface that later learns to display it.
+
+        Behaviour was verified in a browser by dispatching htmx:configRequest
+        against same-origin, cross-origin, protocol-relative, other-port and
+        unparseable targets; only the same-origin ones received the header.
+        """
+        body = tenant_client.get(shell_url).content.decode()
+
+        assert "target.origin !== window.location.origin" in body
+        # The check has to come before the header is set, or it guards nothing.
+        assert body.index("target.origin !==") < body.index("headers['X-CSRFToken']")
+
+
+@pytest.mark.django_db
+class TestStyleGuide:
+    def test_it_renders_the_shell_without_a_session(self, client):
+        """There is no way to log in until issue #31 merges, and a design system
+        nobody can open is a design system nobody reviews."""
+        body = client.get("/ui/").content.decode()
+
+        assert "sidebar-nav-item" in body
+
+    def test_it_exercises_ui_select_outside_the_page_it_was_written_for(self, client):
+        body = client.get("/ui/").content.decode()
+
+        assert "bb-filter-select" in body
+        assert "getBoundingClientRect()" in body
+
+    def test_it_shows_every_platform_icon_and_the_fallback(self, client):
+        body = client.get("/ui/").content.decode()
+
+        for platform in ["telegram", "instagram", "messenger", "whatsapp", "sms", "email"]:
+            assert f"pi-{platform}" in body
+        assert "carrier-pigeon" in body
+
+    def test_it_exercises_every_alert_tone_including_the_added_warning(self, client):
+        body = client.get("/ui/").content.decode()
+
+        for tone in ["success", "info", "warning", "error"]:
+            assert f"alert-{tone}" in body
+
+
+@pytest.mark.django_db
+class TestPlatformIcon:
+    def _render(self, platform, size="sm"):
+        from django.template import Context, Template
+
+        return Template('{% include "partials/_platform_icon.html" with platform=platform size=size %}').render(
+            Context({"platform": platform, "size": size})
+        )
+
+    @pytest.mark.parametrize("platform", ["telegram", "instagram", "messenger", "whatsapp", "sms", "email"])
+    def test_the_six_chat_platforms_render(self, platform):
+        assert "<svg" in self._render(platform)
+
+    def test_an_unknown_key_renders_the_fallback_rather_than_nothing(self):
+        """Studio's second copy has no {% else %} and emits an empty slot."""
+        assert "<svg" in self._render("myspace")
+
+    def test_icons_inherit_colour_so_a_caller_can_tint_them(self):
+        """Deviation 3: a channel appears on a white row, a coloured chip and in
+        a dropdown — brand-hex-only serves only the first."""
+        assert 'fill="currentColor"' in self._render("telegram")
+
+    @pytest.mark.parametrize(("size", "px"), [("sm", "16"), ("md", "20")])
+    def test_the_named_size_api(self, size, px):
+        assert f'width="{px}"' in self._render("telegram", size=size)
+
+    def test_size_defaults_to_sm(self):
+        from django.template import Context, Template
+
+        html = Template('{% include "partials/_platform_icon.html" with platform="sms" %}').render(Context())
+        assert 'width="16"' in html
+
+
+@pytest.mark.django_db
+class TestLogoSizing:
+    def _render(self, **ctx):
+        from django.template import Context, Template
+
+        return Template('{% include "partials/_logo.html" with size=size only %}').render(Context(ctx))
+
+    def test_the_small_variant_uses_a_component_class_not_a_utility(self):
+        """Everything in styles.css is unlayered and Tailwind's utilities live
+        in @layer utilities, so unlayered wins: `w-7 h-7` next to
+        .sidebar-logo-mark was silently ignored and size="sm" did nothing."""
+        html = self._render(size="sm")
+
+        assert "sidebar-logo-mark-sm" in html
+        assert "w-7" not in html
+
+    def test_the_default_variant_carries_no_modifier(self):
+        assert "sidebar-logo-mark-sm" not in self._render(size="md")
+
+    def test_every_modifier_the_partial_emits_exists_in_the_compiled_stylesheet(self):
+        """A class the template emits and the bundle never defines is the same
+        no-op in a different place — and that is not hypothetical. The old rail
+        asked this partial for size="lg" for its whole life against a partial
+        that only branched on "sm", so `.sidebar-logo-mark-lg` was written,
+        compiled and never once applied. Discovering the modifiers from the
+        source rather than naming one is what makes that shape catchable.
+        """
+        from django.contrib.staticfiles import finders
+
+        bundle = Path(finders.find("css/dist/styles.css")).read_text()
+        partial = (Path(__file__).parents[3] / "templates" / "partials" / "_logo.html").read_text()
+        modifiers = set(re.findall(r"sidebar-logo-mark-\w+", partial))
+
+        assert modifiers, "the partial stopped emitting any size modifier at all"
+        for name in modifiers:
+            assert f".{name}{{" in bundle, name
+
+    def test_a_size_the_partial_does_not_know_falls_back_to_the_default(self):
+        """It cannot raise — Django templates do not — so the contract is that
+        an unknown size renders the default mark rather than a class the
+        stylesheet has never heard of."""
+        html = self._render(size="lg")
+
+        assert "sidebar-logo-mark" in html
+        assert "sidebar-logo-mark-" not in html
+
+    def test_both_text_marks_are_hidden_from_assistive_tech(self):
+        """Decoration beside a name that carries the meaning — which is what the
+        product-logo branch's `alt=""` says a line down. Left audible, a reader
+        announces the emoji's Unicode name, or a bare initial, before every
+        workspace name in the switcher's list."""
+
+        class Emoji:
+            icon = "\U0001fad8"
+            name = "Beanery"
+
+        class Initial:
+            icon = ""
+            name = "Beanery"
+
+        from django.template import Context, Template
+
+        template = Template('{% include "partials/_logo.html" with workspace=workspace only %}')
+
+        for workspace in (Emoji(), Initial()):
+            assert 'aria-hidden="true"' in template.render(Context({"workspace": workspace}))
+
+    def test_ambient_context_cannot_resize_the_mark(self):
+        """The include passes `only`; without it a stray `size` in the page
+        context would silently change the logo."""
+        from django.template import Context, Template
+
+        html = Template('{% include "partials/_logo.html" only %}').render(Context({"size": "sm"}))
+
+        assert "sidebar-logo-mark-sm" not in html
+
+
+class TestStatusPillDot:
+    def test_a_pill_holding_a_dot_lays_out_as_a_flex_row(self):
+        """`.status-pill` is inline-block, and the dot is a 6px span that only
+        has a size once its parent is a flex container. The call sites asked
+        for that with `inline-flex items-center gap-1.5`, which the unlayered
+        `.status-pill` beat, so every "Live" pill shipped without its dot.
+        Read from the compiled bundle, because the bundle is what ships."""
+        from django.contrib.staticfiles import finders
+
+        bundle = Path(finders.find("css/dist/styles.css")).read_text()
+        rule = re.search(r"\.status-pill:has\(>\.status-pill-dot\)\{([^}]*)\}", bundle)
+
+        assert rule, "no rule lays out a pill that holds a dot"
+        assert "display:inline-flex" in rule.group(1)
+
+    def test_every_dot_is_a_direct_child_of_its_pill(self):
+        """The rule above matches `> .status-pill-dot`, so a dot wrapped in
+        anything else — or set in a pill-less span — is back to rendering as
+        nothing."""
+        dots = 0
+        offenders = []
+        for path in (Path(__file__).parents[3] / "templates").rglob("*.html"):
+            src = path.read_text()
+            found = src.count('class="status-pill-dot"')
+            # The dot may carry attributes of its own (aria-hidden: the word
+            # beside it is the label, the dot is decoration).
+            seated = len(
+                re.findall(r'<span class="status-pill\b[^"]*"[^>]*>\s*<span class="status-pill-dot"[^>]*>', src)
+            )
+            dots += found
+            if found != seated:
+                offenders.append(path.name)
+
+        assert dots, "no template uses the dot any more"
+        assert not offenders, f"a dot outside a .status-pill renders as nothing: {offenders}"
+
+
+@pytest.mark.django_db
+class TestSettingsLayouts:
+    def test_the_settings_rows_are_the_sidebar_rather_than_a_second_column(self, tenant_client, shell_urls):
+        """One sidebar, two sets of rows.
+
+        The settings nav was a 232px column beside the sidebar, which put the
+        settings rows next to 240px of product rows the reader had just left.
+        It sits in the sidebar now — same <aside>, same renderer, same collapse
+        rules — so the product's rows are not on a settings page and there is a
+        way back for the first time since the column arrived.
+        """
+        body = tenant_client.get("/accounts/settings/").content.decode()
+        sidebar = body[body.index("<aside") : body.index("</aside>")]
+
+        assert "setnav" not in body
+        # The settings rows, drawn as sidebar rows.
+        assert ">Channels</span>" in sidebar
+        assert "sidebar-nav-item" in sidebar
+        # The product's own rows are not, so the sidebar needs its way out.
+        assert ">Broadcasts</span>" not in sidebar
+        assert "sidebar-back" in sidebar
+        # One product row survives: the bell is the only unread indicator there
+        # is, so it is pinned below the settings rows rather than left off the
+        # page — see partials/_app_sidebar.html.
+        assert ">Notifications</span>" in sidebar
+
+    def test_the_way_back_lands_on_the_workspace_you_left_and_names_it(self, tenant_client, shell_urls, tenancy):
+        """`app_home_url`, the same value the old pre-column layouts used. A
+        user with no workspace left to go back to is sent to the org's
+        workspace list instead — see navigation_context.
+
+        It names the workspace because with the switcher gone this row is the
+        only thing on a settings page that says which one you are editing, and
+        half of these rows are workspace-scoped. Asserted as three independent
+        claims rather than one literal run of attributes: the old form pinned
+        `href` and `class` in that order with that exact class list, so adding
+        a utility class failed a test about where the button goes.
+        """
+        body = tenant_client.get("/accounts/settings/").content.decode()
+        sidebar = body[body.index("<aside") : body.index("</aside>")]
+
+        assert f'href="/w/{tenancy.workspace.id}/"' in sidebar
+        assert "sidebar-back" in sidebar
+        assert f">Back to {tenancy.workspace.name}</span>" in sidebar
+        # The switcher is not offered from inside settings: half these rows are
+        # scoped to the workspace you are standing in.
+        assert "sidebar-ws-chevron" not in sidebar
+
+    def test_the_account_menu_names_where_its_settings_row_lands(self, tenant_client, shell_url):
+        """It read "Settings" while the workspace switcher carried a second row
+        called "Workspace settings", and from the account menu the two needed
+        telling apart. The row is unmoved and still lands on your profile —
+        what the copy names is the group that opens with it."""
+        body = tenant_client.get(shell_url).content.decode()
+        sidebar = body[body.index("<aside") : body.index("</aside>")]
+
+        assert ">Organization Settings</span>" in sidebar
+        assert ">Settings</span>" not in sidebar
+        assert 'href="/accounts/settings/" class="sidebar-menu-row"' in sidebar
+
+    def test_both_settings_layouts_render_one_filtered_nav(self, tenant_client, shell_urls, tenancy):
+        """There used to be two group lists, so an Editor on workspace settings
+        would not be shown organisation rows.
+
+        The intent was right and the mechanism was too coarse both ways. It hid
+        every Workspace row from the account settings page, which is where the
+        nav's Settings row lands, so Channels, Tags, Labels and five more had
+        no entry point in the product at all. And inside a group it filtered
+        nothing, so the Editor still saw rows they would be refused at. Each row
+        is now gated on the key its own view is gated on, so one list is both
+        complete and honest.
+        """
+        account = tenant_client.get("/accounts/settings/").content.decode()
+        workspace = tenant_client.get(f"/w/{tenancy.workspace.id}/settings/tags/").content.decode()
+
+        for body in (account, workspace):
+            assert "People &amp; roles" in body
+            assert ">Tags</span>" in body
+            assert ">Channels</span>" in body
+            assert ">Profile</span>" in body
+
+    def test_the_second_column_is_gone_from_the_compiled_bundle(self):
+        """Half of the column is worse than all of it.
+
+        `.setnav` carried a phone rule that positioned it over the page and
+        pushed `.app-shell-main` down by its height. A partial restore — the
+        rules back without the markup, or the markup back without the sidebar
+        change — reopens a 48px gap above every settings page on a phone with
+        nothing in it. Read from the bundle rather than the source, because the
+        bundle is what ships.
+        """
+        from django.contrib.staticfiles import finders
+
+        bundle = Path(finders.find("css/dist/styles.css")).read_text()
+
+        assert "setnav" not in bundle
+
+    def test_no_view_supplied_settings_active_string_is_needed(self, tenant_client, shell_urls):
+        """Deviation 4: the layouts read the same nav structure the sidebar does.
+        Studio needs 11 views to each remember a `settings_active` key.
+
+        Asks /accounts/settings/ rather than /accounts/preferences/: the
+        Notifications row was retired with the placeholder it pointed at, so
+        nothing in the nav is active on that route any more. The contract under
+        test is unchanged — a settings page highlights its own row without its
+        view saying which one.
+        """
+        body = tenant_client.get("/accounts/settings/").content.decode()
+
+        assert 'class="sidebar-nav-item active"' in body
+        assert 'aria-current="page"' in body
+
+
+class TestTemplateHygiene:
+    def test_no_short_comment_spans_more_than_one_line(self):
+        """Django's `{# #}` is single-line only. A multi-line one is not a
+        comment at all — it renders as visible text on the page.
+
+        This has now bitten the project twice: issue #31's base.html carries a
+        note about a three-line `{# #}` that showed up in the sidebar, and this
+        workstream did the same thing in a note about cascade layers, which
+        appeared verbatim above the team-members table. `{% comment %}` is the
+        multi-line form.
+        """
+        offenders = []
+        for path in (Path(__file__).parents[3] / "templates").rglob("*.html"):
+            src = path.read_text()
+            for match in re.finditer(r"\{#", src):
+                rest = src[match.start() :]
+                close = rest.find("#}")
+                if close == -1 or "\n" in rest[:close]:
+                    line = src[: match.start()].count("\n") + 1
+                    offenders.append(f"{path.name}:{line}")
+
+        assert not offenders, f"multi-line {{# #}} renders as text: {offenders}"
+
+    @pytest.mark.django_db
+    def test_no_rendered_page_leaks_a_comment(self, tenant_client, shell_urls):
+        """The symptom the rule above prevents, checked on real responses.
+
+        Only comment syntax: the style guide at /ui/ legitimately displays
+        `{% templatetag openblock %} ui_select ...` as documentation, so a blanket
+        ban on `{%` would fail on a page doing exactly what it should.
+        """
+        for url in shell_urls:
+            body = tenant_client.get(url).content.decode()
+            for token in ["{#", "#}", "{% comment %}", "{% endcomment %}"]:
+                assert token not in body, f"{token!r} leaked into {url}"
+
+
+@pytest.mark.django_db
+class TestStaticReferences:
+    def test_every_static_reference_in_a_template_actually_exists(self):
+        """The Docker image runs collectstatic under ManifestStaticFilesStorage,
+        which hard-fails on a {% static %} path it cannot resolve — so a typo
+        here breaks the image build, not the test suite. Catch it in the fast
+        job instead of the slow one.
+
+        This also covers the build wiring: css/dist/styles.css only resolves
+        because `theme` is an installed app and `npm run build:css` has run.
+        """
+        from django.contrib.staticfiles import finders
+
+        templates = Path(__file__).parents[3] / "templates"
+        refs = set()
+        for path in templates.rglob("*.html"):
+            refs |= set(re.findall(r"\{%\s*static\s+'([^']+)'", path.read_text()))
+
+        assert refs, "no {% static %} references found — did the shell disappear?"
+        missing = sorted(ref for ref in refs if finders.find(ref) is None)
+        assert not missing, f"referenced but not found by any static finder: {missing}"
+
+    def test_the_compiled_stylesheet_is_the_one_the_theme_app_serves(self):
+        """apps/theme/ exists only to put the Tailwind output on the app-directories
+        finder. If it were dropped from INSTALLED_APPS this would be the symptom."""
+        from django.contrib.staticfiles import finders
+
+        found = finders.find("css/dist/styles.css")
+
+        assert found, "the Tailwind bundle is missing — run `npm run build:css`"
+        assert "apps/theme/static" in found.replace("\\", "/")
+
+
+class TestTailwindSourceCoverage:
+    """styles.css imports Tailwind with `source(none)`, which turns off Tailwind
+    4's automatic content detection and makes the @source directives the entire
+    content list.
+
+    That was done deliberately — auto-detection scanned the whole repo and emitted
+    a rule for any file that merely contained a word matching a utility name, so
+    `blur` arrived from the DOM event in the minified alpine bundle and `isolate`
+    from a Makefile comment. A stylesheet that changes when someone edits a
+    Makefile is not reproducible.
+
+    The cost of that choice is this class. With auto-detection on, a template in a
+    new location still got its classes; with it off, the template renders unstyled
+    and nothing fails — not the suite, which only checks that {% static %} paths
+    resolve, and not the audit job's determinism check, which compares two builds
+    of the same input and so is blind to an under-inclusive source list by
+    construction. The failure only shows up in a browser. Hence a test.
+    """
+
+    CSS = Path(__file__).parents[3] / "apps" / "theme" / "static_src" / "src" / "styles.css"
+
+    def _globs(self):
+        text = self.CSS.read_text()
+        assert "source(none)" in text, (
+            "styles.css no longer imports Tailwind with source(none). If automatic "
+            "source detection is back on, this class is obsolete — but so is the "
+            "reproducibility it was protecting; see the class docstring."
+        )
+        patterns = re.findall(r'@source\s+"([^"]+)"', text)
+        assert patterns, "styles.css declares no @source globs, so it can emit nothing"
+        return patterns
+
+    def test_every_template_lives_under_an_at_source_glob(self):
+        """A template Tailwind never reads still renders — just with no styles."""
+        root = Path(__file__).parents[3]
+
+        covered = set()
+        for pattern in self._globs():
+            covered |= {p.resolve() for p in self.CSS.parent.glob(pattern)}
+
+        # Anything Django's loaders would find: the DIRS entry plus, because
+        # APP_DIRS is on, every apps/*/templates tree.
+        present = {p.resolve() for p in (root / "templates").rglob("*.html")}
+        present |= {p.resolve() for p in root.glob("apps/*/templates/**/*.html")}
+
+        assert present, "no templates found at all — did the shell move?"
+        unscanned = sorted(str(p.relative_to(root)) for p in present - covered)
+        assert not unscanned, (
+            "these templates are outside every @source glob in styles.css, so "
+            f"their classes are missing from the bundle: {unscanned}. Add an "
+            "@source directive covering them, and if the new path is outside "
+            "templates/ also add it to the frontend stage's COPY in the Dockerfile."
+        )
+
+    def test_no_python_file_emits_a_class_attribute(self):
+        """The @source globs cover templates only. A form widget or a
+        MESSAGE_TAGS mapping that starts naming CSS classes in Python would be a
+        content source nothing scans."""
+        root = Path(__file__).parents[3]
+        pattern = re.compile(r"""["']class["']\s*:|\bclass=["']""")
+
+        offenders = []
+        for directory in ("apps", "config"):
+            for path in (root / directory).rglob("*.py"):
+                if "/tests/" in path.as_posix() or "/migrations/" in path.as_posix():
+                    continue
+                for line in path.read_text().splitlines():
+                    # config's LOGGING maps "class" to dotted handler paths, which
+                    # are not CSS and are not rendered into any page.
+                    if pattern.search(line) and "logging." not in line:
+                        offenders.append(f"{path.relative_to(root)}: {line.strip()}")
+
+        assert not offenders, (
+            "CSS classes generated in Python are invisible to Tailwind's @source "
+            f"globs and will not be emitted: {offenders}. Move them into a "
+            "template, or add the file to the @source list in styles.css."
+        )
+
+
+@pytest.mark.django_db
+class TestErrorPages:
+    def test_404_keeps_its_literal_heading(self, client):
+        response = client.get("/no-such-page")
+
+        assert response.status_code == 404
+        assert b"404 Not Found" in response.content
+
+    @pytest.mark.parametrize("name", ["403.html", "404.html", "500.html"])
+    def test_error_templates_render_standalone(self, name):
+        """django.views.defaults.server_error renders 500.html with a bare
+        Context() — no context processors, no `request`. Rendering with an empty
+        context here is exactly that path, and it must not raise."""
+        from django.template.loader import get_template
+
+        html = get_template(name).render({})
+
+        assert "Quikro" in html
+
+    @pytest.mark.parametrize(
+        ("name", "heading"),
+        [("403.html", "403 Forbidden"), ("404.html", "404 Not Found"), ("500.html", "500 Server Error")],
+    )
+    def test_each_error_page_keeps_its_heading(self, name, heading):
+        from django.template.loader import get_template
+
+        assert heading in get_template(name).render({})
+
+    def test_error_pages_are_styled_but_reference_no_request(self, client):
+        """A nonce would render empty on the 500 path, so there is no inline
+        script to need one."""
+        from django.template.loader import get_template
+
+        html = get_template("500.html").render({})
+
+        assert "css/dist/styles.css" in html
+        assert "<script" not in html

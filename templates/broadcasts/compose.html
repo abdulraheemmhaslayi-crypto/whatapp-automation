@@ -1,0 +1,63 @@
+﻿{% extends "base.html" %}
+{% load static %}
+{% comment %}
+The composer page (SPEC §13.1). The page itself is a shell; everything inside
+`#broadcast-wizard` is _wizard.html, so a step's POST answers with the next
+step's markup and there is one renderer for a step whether it was reached by
+navigation or by saving.
+
+flatpickr's stylesheet and script are pulled in here rather than globally, the
+same way templates/contacts/list.html does it: the schedule step is the only
+page in the product that needs a date picker, and styles.css has themed
+flatpickr since L1-B in anticipation.
+{% endcomment %}
+
+{% block title %}{{ broadcast.name }} · Broadcasts · Quikro{% endblock %}
+
+{% block extra_head %}
+  <link rel="stylesheet" href="{% static 'js/vendor/flatpickr.min.css' %}">
+{% endblock %}
+
+{% comment %}
+  The editor bar (HANDOFF §2.3): a way back, the broadcast's own name and state,
+  and "Save and exit". A step saves as it is continued past, so the button
+  saves the step on screen first if it has changed (broadcastWizardExit in
+  _compose_script.html) and only then leaves. Deleting the draft is the red link
+  at the foot of the summary panel, away from anything you would press on the
+  way through.
+{% endcomment %}
+{% block page_header %}
+<div class="editor-bar mb-5">
+    <a class="editor-bar-back" href="{% url 'broadcasts:list' workspace_id=request.workspace.id %}">
+        <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+        Broadcasts
+    </a>
+    <span class="editor-bar-sep" aria-hidden="true">/</span>
+    <h1 class="editor-bar-title">{{ broadcast.name }}</h1>
+    <span class="status-pill status-pill-{{ broadcast.status }}"><span class="status-pill-dot" aria-hidden="true"></span>{{ broadcast.get_status_display }}</span>
+    <a class="btn-pill-secondary btn-pill-sm ml-auto" href="{% url 'broadcasts:list' workspace_id=request.workspace.id %}"
+       x-data="broadcastWizardExit()" @click="leave($event)">Save and exit</a>
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="broadcast-wizard">
+    {% include "broadcasts/_wizard.html" %}
+</div>
+{% endblock %}
+
+{% block alpine_components %}
+{% comment %}
+The CRM filter builder's Alpine factory, defined here rather than inside the
+step that uses it. base.html renders this block before Alpine's own deferred
+script, which is the window in which a global x-data factory has to exist — and
+a definition that arrived *inside* an htmx swap would race Alpine's mutation
+observer for the element that calls it.
+{% endcomment %}
+{% include "contacts/_filter_bar_script.html" %}
+{% include "broadcasts/_compose_script.html" %}
+{% endblock %}
+
+{% block extra_js %}
+  <script src="{% static 'js/vendor/flatpickr.min.js' %}"></script>
+{% endblock %}

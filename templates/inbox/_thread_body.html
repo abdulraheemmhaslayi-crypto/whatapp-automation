@@ -1,0 +1,242 @@
+{% comment %}
+The polled half of a thread: pause banner, compliance notice, message history.
+
+EVERY string below arrived from a stranger (SECURITY-BASELINE §2) — message
+text, captions, card titles, button labels, attachment URLs. Three rules hold
+here and they are checked by apps/inbox/tests/test_hostile_content.py:
+
+  * Nothing is marked safe. Default autoescaping is the whole defence for text.
+  * No URL reaches an href or a src unless apps/inbox/rendering.py already put
+    it in an Image/Link/Card, which it only does after
+    apps.common.validators.is_renderable_url said http(s). A rejected one is
+    already a Tombstone by the time it gets here, so there is no {% if %} in
+    this file deciding it — the decision is made in Python, once. A Media part
+    is the exception that proves it: its URL was *reversed* by rendering.py
+    rather than received from anyone, and running a stranger-string check over
+    one of our own routes would be theatre.
+  * `rel="noopener noreferrer"` and `target="_blank"` on every outbound link:
+    the destination is chosen by the same stranger.
+
+An <img> but never an <audio>/<video>: the CSP's img-src allows https: while
+media-src is 'self' blob: only, so an inline player pointed at a platform CDN
+would be blocked by the browser and render as a broken control. Non-image media
+is a link, and rendering.py is where that is decided. A Media part is served
+from our own origin, so media-src would in fact allow a player for it — the
+reason it stays an <img> is not the CSP but that nothing knows what the bytes
+are until they are sniffed at fetch time.
+{% endcomment %}
+
+{% comment %}
+  The window this render used. The polled element hx-includes it, so the next
+  poll asks for the same amount of history rather than resetting to one page.
+{% endcomment %}
+<input type="hidden" id="inbox-thread-limit" name="limit" value="{{ limit }}">
+
+{% comment %}
+  The status bar (HANDOFF §3, Inbox): whether you may write to this person and
+  whether automation is answering them, said before anybody types. Pinned under
+  the header (sticky in the scrolling pane), so it is there however far back
+  the reader has scrolled. Automation paused by a person is amber; otherwise
+  the bar says what the window allows (green dot when a reply can go out, grey
+  when the channel blocks it — the reason is the notice below) and offers
+  "Pause automation" in every one of those states, because a flow may go on
+  writing with a template even when an agent cannot.
+
+  "Window open for 3h 12m" is minutes-grained and part of this region's ETag
+  (see apps/inbox/views.py::messages), so it moves about once a minute. Once
+  the window has lapsed nothing here claims it is open: a reply that is still
+  allowed then rides on a message tag, and says so.
+{% endcomment %}
+<div class="ib-status">
+{% if not is_paused %}
+  <div class="ib-banner {% if compliance.allowed %}ib-banner-open{% else %}ib-banner-quiet{% endif %}">
+    <span class="ib-status-dot" aria-hidden="true"></span>
+    <span>
+      {% if compliance.allowed %}
+        {% if compliance.window_left %}Window open for {{ compliance.window_left }}
+        {% elif compliance.tag %}Window closed, replies go out with a message tag
+        {% elif compliance.identity.window_expires_at %}You can reply
+        {% else %}You can reply at any time{% endif %}
+        ·
+      {% endif %}
+      {% comment %}
+        "On", not "running": not paused means flows may answer this contact,
+        which is true whether or not one happens to be mid-run — the contact
+        panel says which one last ran.
+      {% endcomment %}
+      Automation is on
+    </span>
+    {% if can_reply %}
+      <form class="ml-auto" hx-post="{% url 'inbox:pause' workspace_id=request.workspace.id conversation_id=conversation.id %}" hx-swap="none">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="pause">
+        <button type="submit" class="ib-banner-action" title="Take over: flows stop replying to this contact while you handle it">Pause automation</button>
+      </form>
+    {% endif %}
+  </div>
+{% endif %}
+
+{% if is_paused %}
+  <div class="ib-banner ib-banner-paused">
+    <span class="ib-status-dot" aria-hidden="true"></span>
+    {% comment %}
+      An absolute time, not "29 minutes left". The ETag tracks *whether* the
+      pause is live (apps/inbox/views.py folds it in), so the bar appears and
+      disappears on time; it must not claim a precision the refresh cannot back.
+    {% endcomment %}
+    <span>Automation paused until {{ paused_until|time:"H:i" }} · Flows will not reply to this contact</span>
+    {% if can_reply %}
+      <form class="ml-auto" hx-post="{% url 'inbox:pause' workspace_id=request.workspace.id conversation_id=conversation.id %}" hx-swap="none">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="resume">
+        <button type="submit" class="ib-banner-action">Resume automation</button>
+      </form>
+    {% endif %}
+  </div>
+{% endif %}
+
+{% include "inbox/_compliance_notice.html" %}
+</div>
+
+<div class="ib-messages">
+{% include "inbox/_deferred.html" %}
+
+{% if has_more %}
+  <div class="text-center mb-3">
+    {% comment %}
+      Widens the window rather than paging to a cursor: the response is the same
+      shape the poll asks for, one page taller, so the two compose instead of
+      overwriting each other. At MAX_THREAD_MESSAGES next_limit stops growing
+      and the button stops being offered.
+    {% endcomment %}
+    {% if next_limit > limit %}
+      <button type="button" class="btn-outline btn-inline"
+              hx-get="{% url 'inbox:messages' workspace_id=request.workspace.id conversation_id=conversation.id %}?limit={{ next_limit }}"
+              hx-target="#inbox-thread-body"
+              hx-swap="innerHTML">Load earlier messages</button>
+    {% else %}
+      <p class="text-xs" style="color: var(--text-tertiary);">Showing the most recent {{ limit }} messages.</p>
+    {% endif %}
+  </div>
+{% endif %}
+
+<ol class="ib-message-list">
+  {% for item in rendered %}
+    {% ifchanged item.message.day_label %}<li class="ib-day" role="separator">{{ item.message.day_label }}</li>{% endifchanged %}
+    {% comment %}
+      Three voices, three looks (HANDOFF §3, Inbox): the contact in white on
+      the left; automation — a flow or a broadcast — in grey on the right,
+      labelled with the flow that said it; a person on the team in ink. The
+      source is the message's own column (MessageSource), so the look follows
+      what produced the message rather than guessing from its direction.
+    {% endcomment %}
+    <li class="ib-msg {% if item.is_inbound %}ib-msg-in{% else %}ib-msg-out{% endif %}">
+      <div class="ib-bubble {% if item.is_note %}ib-bubble-note{% elif item.is_inbound %}ib-bubble-in{% elif item.message.source == 'agent' %}ib-bubble-out{% else %}ib-bubble-auto{% endif %}{% if item.is_failed %} ib-bubble-failed{% endif %}">
+        {% for part in item.parts %}
+          {% if part.kind == "text" %}
+            <span class="ib-text">{{ part.text }}</span>
+          {% elif part.kind == "image" or part.kind == "media" %}
+            {% comment %}
+              One branch for two kinds because the markup is the same and the
+              difference is upstream: an "image" part holds a platform URL that
+              is_renderable_url already vetted, a "media" part holds a path to
+              our own inbox:media route, which resolves an identifier the
+              platform would not serve to a browser. rendering.py decides both.
+
+              A "media" part is produced only for media the platform called an
+              image or did not name at all — a known audio/video/file is a Link
+              part, decided in rendering.py. So the <img> is a bet only in the
+              unnamed case, the alt text is what shows when it loses, and the
+              link around it downloads the file either way.
+
+              `default_alt` comes off the part rather than being written here,
+              because the two kinds can honestly say different things: an Image
+              is known to be one, a Media may only be guessed at.
+            {% endcomment %}
+            <a href="{{ part.url }}" target="_blank" rel="noopener noreferrer">
+              <img class="ib-media" src="{{ part.url }}" alt="{{ part.caption|default:part.default_alt }}" loading="lazy">
+            </a>
+            {% if part.caption %}<div class="ib-bubble-meta">{{ part.caption }}</div>{% endif %}
+          {% elif part.kind == "link" %}
+            <a href="{{ part.url }}" target="_blank" rel="noopener noreferrer">{{ part.caption|default:part.media_kind }}</a>
+            <span class="ib-chip">{{ part.media_kind }}</span>
+          {% elif part.kind == "card" %}
+            {% include "inbox/_card.html" with card=part %}
+          {% elif part.kind == "gallery" %}
+            {% for card in part.cards %}
+              {% include "inbox/_card.html" with card=card %}
+            {% endfor %}
+          {% else %}
+            <div class="ib-tombstone">{{ part.reason }}</div>
+          {% endif %}
+        {% endfor %}
+
+        {% if item.buttons or item.quick_replies %}
+          <div class="ib-bubble-actions">
+            {% for button in item.buttons %}
+              {% if button.url %}
+                <a class="ib-chip" href="{{ button.url }}" target="_blank" rel="noopener noreferrer">{{ button.label }}</a>
+              {% else %}
+                <span class="ib-chip">{{ button.label }}</span>
+              {% endif %}
+            {% endfor %}
+            {% for reply in item.quick_replies %}<span class="ib-chip">{{ reply.label }}</span>{% endfor %}
+          </div>
+        {% endif %}
+      </div>
+
+      {% comment %}
+        Who, then when — "Sam · 10:41", "Flow “Price question” · 10:41". The
+        day is the divider above, so the line only needs the time.
+      {% endcomment %}
+      <div class="ib-bubble-meta">
+        {% if item.is_note %}<span>Internal note: never sent</span>
+        {% elif item.is_inbound %}<span>{{ conversation.contact.display_name }}</span>
+        {% elif item.message.flow_name %}<span>Flow “{{ item.message.flow_name }}”</span>
+        {% elif item.message.source == "broadcast" %}<span>Broadcast</span>
+        {% elif item.message.source == "automation" %}<span>Automation</span>
+        {% elif item.message.source == "agent" %}<span>Team</span>{% endif %}
+        <span aria-hidden="true">·</span>
+        <time datetime="{{ item.message.created_at|date:'c' }}" title="{{ item.message.created_at|date:'j M Y, H:i' }}">{{ item.message.created_at|date:"H:i" }}</time>
+        {% if item.button_id %}<span class="ib-chip">Pressed: {{ item.button_id }}</span>{% endif %}
+        {% if item.ref %}<span class="ib-chip">Ref: {{ item.ref }}</span>{% endif %}
+        {% if not item.is_inbound and not item.is_note %}
+          {% comment %}
+            Ticks read off the status rather than being computed here.
+            apps.messaging.ingest refuses to move a message backwards down
+            DELIVERY_PROGRESS, so what is stored is already the furthest rung
+            reached.
+          {% endcomment %}
+          {% if item.message.status == "read" %}<span class="ib-tick ib-tick-read" title="Read">✓✓</span>
+          {% elif item.message.status == "delivered" %}<span class="ib-tick" title="Delivered">✓✓</span>
+          {% elif item.message.status == "sent" %}<span class="ib-tick" title="Sent">✓</span>
+          {% elif item.message.status == "failed" %}<span class="ib-tick ib-tick-failed" title="Failed">!</span>
+          {% else %}<span class="ib-tick" title="Queued">…</span>{% endif %}
+        {% endif %}
+      </div>
+
+      {% if item.is_failed and item.reason %}
+        <div class="ib-bubble-error flex items-center gap-2">
+          <span>{{ item.reason }}</span>
+          {% if item.can_retry and can_reply %}
+            <form hx-post="{% url 'inbox:retry' workspace_id=request.workspace.id conversation_id=conversation.id message_id=item.message.id %}" hx-swap="none">
+              {% csrf_token %}
+              {% comment %}
+                One token per rendered bubble, so a double-click sends one
+                message: both submits carry the same idempotency key and the
+                second collapses on message_unique_conv_idem. A re-render after
+                the first retry issues a new token, which is what makes a
+                deliberate second attempt possible.
+              {% endcomment %}
+              <input type="hidden" name="token" value="{{ retry_token }}">
+              <button type="submit" class="btn-link btn-inline">Try again</button>
+            </form>
+          {% endif %}
+        </div>
+      {% endif %}
+    </li>
+  {% empty %}
+    <li class="ib-empty">No messages yet.</li>
+  {% endfor %}
+</ol>
+</div>

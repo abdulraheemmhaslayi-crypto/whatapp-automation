@@ -1,0 +1,853 @@
+# Self-hosting BrightBean Chat
+
+Everything needed to run this yourself: first boot, TLS, the background worker,
+backups, upgrades, and how to tell whether what you deployed is healthy.
+
+The reference deployment is Docker Compose on one machine. Railway is the
+one-click option and has a template, plus a manual setup guide below.
+Production settings require real secrets and disable `DEBUG`.
+
+> The security expectations behind every choice here are in
+> [`SECURITY-BASELINE.md`](SECURITY-BASELINE.md). This guide points at it rather
+> than repeating it; the [hardening checklist](#hardening-checklist) at the end
+> is the operator's half.
+
+## Contents
+
+- [What you need](#what-you-need)
+- [Two processes, not one](#two-processes-not-one)
+- [Docker Compose — the reference deployment](#docker-compose--the-reference-deployment)
+- [Connecting your first channel](#connecting-your-first-channel)
+- [Verifying the deployment](#verifying-the-deployment)
+- [TLS termination](#tls-termination)
+- [Storage, when web and worker are separate](#storage-when-web-and-worker-are-separate)
+- [Railway](#railway)
+- [Running without a worker (tick mode)](#running-without-a-worker-tick-mode)
+- [Environment variables](#environment-variables)
+- [Backups](#backups)
+- [Upgrades](#upgrades)
+- [Hardening checklist](#hardening-checklist)
+- [Troubleshooting](#troubleshooting)
+
+---
+
+## What you need
+
+- **A domain name**, with an A (and ideally AAAA) record pointing at the host
+  *before* you start. The certificate is issued on first request, and that
+  cannot happen until DNS resolves.
+- **A host with a public IP**, ports 80 and 443 reachable. 1 vCPU and 1 GB RAM
+  runs a small instance; 2 vCPU / 2 GB is the size the performance numbers in
+  [`SPEC.md`](SPEC.md) §21 assume.
+- **Docker Engine 24+ with the Compose plugin.**
+- **Nothing else.** Postgres is the only datastore — it is also the task queue,
+  the lock manager and the rate limiter ([`SPEC.md`](SPEC.md) §22). There is no
+  Redis and no message broker to run, and any guide that tells you to add one is
+  describing a different application.
+
+Webhooks are why the public hostname is not optional. Telegram, Meta and Twilio
+all deliver events by POSTing to a URL you register with them, and all of them
+require HTTPS. A deployment that is not publicly reachable can send messages but
+will never receive one.
+
+## Two processes, not one
+
+The app runs as **two** long-lived processes against one database:
+
+| Process | Command | What it does |
+|---|---|---|
+| web | `gunicorn config.wsgi:application` | Serves pages, the API, and the webhook endpoints. Executes the first step of a flow *inline* when it can do so within 1.5 seconds. |
+| worker | `python manage.py process_tasks` | Claims and runs everything time-based from the queue table. |
+
+Both compose files run both, and so do the Railway services described below.
+
+**If only the web process is up**, the app looks fine and is quietly half
+broken. Inbound webhooks are still acknowledged, and a flow whose first step is
+a simple reply still answers immediately — that path runs inside the request.
+But everything the engine hands to the queue simply never happens:
+
+- Smart Delay steps and follow-up timers
+- send retries, and the recovery of actions abandoned by a crashed process
+- sequence steps
+- broadcast fanout
+- hourly housekeeping (token refresh, stale-execution expiry, log pruning)
+
+Nothing errors. The rows sit in the queue with a due time in the past. If you
+cannot run a second process, use [tick mode](#running-without-a-worker-tick-mode),
+which is a supported configuration with a documented cost — not an accident.
+
+You can run **more than one** worker. The claim statement uses `FOR UPDATE SKIP
+LOCKED`, so concurrent workers take disjoint batches
+(`docker compose -f docker-compose.prod.yml up -d --scale worker=3`).
+
+---
+
+## Docker Compose — the reference deployment
+
+Five services: Postgres, a one-shot migration, the web app, the worker, and
+Caddy terminating TLS in front of them.
+
+### 1. Clone, on the host
+
+```bash
+git clone https://github.com/brightbeanxyz/brightbean-chat.git
+cd brightbean-chat
+```
+
+### 2. Generate the secrets
+
+```bash
+make prod-secrets
+```
+
+That prints four values. Two of them — `SECRET_KEY` and `ENCRYPTION_KEY_SALT` —
+are what decrypt your stored platform credentials. Put them somewhere safe now,
+not after the first backup (see [Backups](#backups)).
+
+If `make` is not installed:
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(50))"
+```
+
+### 3. Write `.env`
+
+```bash
+cp deploy/env.prod.example .env
+```
+
+Then fill in the five required values. `APP_DOMAIN` is the hostname you pointed
+at this host; it configures Caddy's certificate, Django's `ALLOWED_HOSTS` and
+the `APP_URL` that public links are built from, so there is only one place to
+get it right.
+
+```dotenv
+APP_DOMAIN=chat.example.com
+ACME_EMAIL=ops@example.com
+SECRET_KEY=…
+ENCRYPTION_KEY_SALT=…
+POSTGRES_PASSWORD=…
+```
+
+> If you had already run the development stack in this checkout, that `.env` is
+> the file you are replacing. Compose reads `./.env` for both interpolation and
+> the container environment, so a leftover development `DATABASE_URL` would
+> point the production app at a database that is not there.
+
+Nothing here defaults. `docker compose` refuses to start while any required
+value is missing, and says which one:
+
+```
+error while interpolating services.postgres.environment.POSTGRES_PASSWORD:
+required variable POSTGRES_PASSWORD is missing a value: set POSTGRES_PASSWORD —
+generate one with `make prod-secrets`, see deploy/env.prod.example
+```
+
+It stops at the first one it finds, so if several are missing you will see this
+more than once — each message names its own variable and points back here.
+
+That is deliberate. A deployment that boots with a placeholder key published in
+this repository signs every session and encrypts every credential with a value
+anyone can read ([`SECURITY-BASELINE.md`](SECURITY-BASELINE.md) §8).
+
+### 4. Start it
+
+```bash
+docker compose -f docker-compose.prod.yml up -d
+```
+
+The first run builds the image (a few minutes: it compiles the Tailwind bundle
+and the flow-builder island), starts Postgres, runs migrations to completion,
+then starts the app, the worker and Caddy. Caddy obtains the certificate on the
+first request.
+
+```bash
+docker compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.prod.yml logs -f
+```
+
+`make prod-up`, `make prod-down` and `make prod-logs` are shorthands for the
+same three commands.
+
+### 5. Create the first account
+
+Open `https://chat.example.com/accounts/signup/`. The first account gets its own
+organization and workspace and lands in the app.
+
+Password reset, address verification, member invitations and notification
+emails need SMTP (`EMAIL_HOST` and friends in `.env`). Nothing is gated on a
+verified address, so you can come back to this, but you cannot reset a
+forgotten password without it, and invitations never arrive. This is the
+deployment's own [account email](../README.md#account-email), not the email
+channel you message contacts through, which is connected per workspace in the
+app ([Email](channels/email.md)).
+
+---
+
+## Connecting your first channel
+
+Every platform needs a URL to deliver events to. They are all under `/webhooks/`
+on your own domain:
+
+| Platform | Webhook URL | Shape |
+|---|---|---|
+| Telegram | `https://<your-host>/webhooks/telegram/` | One per deployment; the bot token identifies the connection |
+| Instagram | `https://<your-host>/webhooks/instagram/` | One per deployment, shared by every workspace's accounts |
+| Messenger | `https://<your-host>/webhooks/messenger/` | One per deployment, shared by every workspace's pages |
+| WhatsApp | `https://<your-host>/webhooks/whatsapp/` | One per deployment |
+| SMS (Twilio) | `https://<your-host>/webhooks/sms/<connection id>/` | One per channel connection |
+| Email (Resend) | `https://<your-host>/webhooks/email/resend/<connection id>/` | One per channel connection |
+| Email (SES) | `https://<your-host>/webhooks/email/ses/<connection id>/` | One per channel connection |
+
+The connection id for the per-connection rows is shown on the channel's settings
+page after you create it.
+
+**The Meta platforms also want a verify token.** Instagram, Messenger and
+WhatsApp confirm a webhook subscription with a `GET` before they will send you
+anything. Set `PLATFORM_<PLATFORM>_VERIFY_TOKEN` in `.env`, restart, and paste
+the same value into Meta's "Verify token" field. A platform with no token
+configured answers **404** to that GET, so nothing can be subscribed to it by
+accident.
+
+Per-platform setup — where each credential comes from, what to enable in each
+dashboard, and the quirks of each API — is in [`channels/`](channels/):
+[Telegram](channels/telegram.md) · [Instagram](channels/instagram.md) ·
+[Messenger](channels/messenger.md) · [WhatsApp](channels/whatsapp.md) ·
+[SMS](channels/sms.md) · [Email](channels/email.md).
+
+---
+
+## Verifying the deployment
+
+```bash
+make smoke URL=https://chat.example.com
+```
+
+or, with the optional extras:
+
+```bash
+scripts/smoke.sh https://chat.example.com \
+  --tick-token "$TICK_TOKEN" \
+  --db-host chat.example.com \
+  --project brightbean-chat
+```
+
+It checks the things that are easy to get wrong and hard to notice:
+
+- `/healthz` reports a real database round-trip, not just that the process is up
+- plain HTTP redirects to HTTPS
+- all four security headers are present with the right values, and Django's CSP
+  survived the proxy
+- `/internal/tick` answers **404** without a token and with a wrong one
+- an unconfigured Meta webhook refuses verification with a 404
+- `--db-host`: Postgres is *not* answering on 5432 from outside
+- `--project`: the app container is not running as root
+
+Add `--insecure` when the certificate comes from Caddy's internal CA — that is
+what you get with `APP_DOMAIN=localhost`, which is how the stack is tested
+locally and in CI.
+
+Two things it will tell you rather than guess at: a base URL on a non-default
+TLS port (`CADDY_HTTPS_PORT`) means the plain-HTTP origin cannot be inferred, so
+pass `--http-url` to check the redirect; and a `--db-host` that does not resolve
+is reported as a failure rather than as a closed port, because a name that never
+resolved proves nothing about what is listening.
+
+`--verify-token` checks that a correct token is echoed, and deliberately does
+**not** try a wrong one: a mismatched `hub.verify_token` counts towards the
+webhook signature-failure ban, so a check that exercised it would eventually ban
+whoever keeps running it.
+
+`/healthz` is also what you point an uptime monitor at. It returns 503 when the
+database is unreachable, and it is exempt from the HTTPS redirect so in-network
+probes reaching the container directly are not answered with a 301.
+
+---
+
+## TLS termination
+
+### Caddy, the default
+
+Caddy obtains and renews the certificate from Let's Encrypt automatically and
+sets the four headers [`SECURITY-BASELINE.md`](SECURITY-BASELINE.md) §8 requires
+at the proxy: HSTS, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`
+and a referrer policy. `config/settings/production.py` sets the same four
+itself, so a deployment is hardened even if the proxy is replaced.
+
+Certificates live in the `caddy_data` volume. Keep it: losing it means
+re-issuing on every restart, which runs into Let's Encrypt's rate limits.
+
+Caddy writes **no access log** by default, and that is on purpose — the default
+access-log format records the full URI, and `/internal/tick?token=…` and Meta's
+`hub.verify_token` both travel in query strings. The application log is scrubbed
+([`SECURITY-BASELINE.md`](SECURITY-BASELINE.md) §5); an edge access log is not.
+If you want one anyway, add a `log` block to `deploy/Caddyfile` and treat the
+output as sensitive.
+
+### A local certificate, for testing
+
+Set `APP_DOMAIN=localhost` and Caddy issues from its own internal CA with no
+ACME call at all. This is how you can exercise the whole production stack —
+gunicorn, the worker, TLS, the headers — on a laptop before pointing DNS at
+anything:
+
+```bash
+docker compose -f docker-compose.prod.yml -p bbchat-prod up -d
+scripts/smoke.sh https://localhost --insecure --project bbchat-prod
+```
+
+### Terminating TLS somewhere else
+
+If you already run nginx, Traefik, HAProxy or a cloud load balancer:
+
+```bash
+docker compose -f docker-compose.prod.yml \
+               -f deploy/docker-compose.external-tls.yml up -d
+```
+
+Caddy is excluded and the app is published on `127.0.0.1:8000` — loopback only,
+never `0.0.0.0`, which would put an app that believes it is behind TLS directly
+on the internet over plain HTTP.
+
+Your proxy then owns four things. They are listed in full at the top of
+[`deploy/docker-compose.external-tls.yml`](../deploy/docker-compose.external-tls.yml);
+the two that break the app immediately if you miss them are
+`X-Forwarded-Proto: https` (without it Django redirects to itself forever) and
+passing the original `Host` header through unmodified (without it every request
+is a 400). Set `TRUSTED_PROXIES` to your proxy's address, and re-run the smoke
+script — it checks whatever is actually in front.
+
+---
+
+## Storage, when web and worker are separate
+
+The two processes share more than a database. A CSV contact import is
+**uploaded by the web process and opened by the worker**
+(`apps/contacts/views.py` writes the file, `apps/contacts/imports.py` reads it),
+and every media-library upload is served back later by whichever process gets
+the request.
+
+With `STORAGE_BACKEND=local` that only works if both processes see the same
+filesystem:
+
+| Target | Do they? | What to do |
+|---|---|---|
+| Docker Compose | **Yes.** `app` and `worker` both mount the `media_data` volume. | Nothing. `local` is fine. |
+| Railway | **No.** A volume attaches to one service. | Set `STORAGE_BACKEND=s3` and the `S3_*` variables. |
+
+Left on `local`, a PaaS deployment looks healthy and fails in two specific ways:
+a queued contact import errors because the worker cannot find the file the web
+process just wrote, and uploaded media 404s after the next restart. Neither
+shows up until someone tries it.
+
+The `S3_*` names are generic on purpose — AWS S3, Cloudflare R2, Backblaze B2
+and MinIO all work with the same five variables:
+
+```dotenv
+STORAGE_BACKEND=s3
+S3_BUCKET_NAME=brightbean-chat
+S3_ACCESS_KEY_ID=…
+S3_SECRET_ACCESS_KEY=…
+S3_ENDPOINT_URL=            # blank for AWS; set it for R2, B2 or MinIO
+S3_REGION_NAME=auto
+```
+
+**Every process needs identical values.** On Railway, set them on `web` and
+reference them from the worker (`${{web.S3_BUCKET_NAME}}` and so on), or hold
+them in a project shared variable; a template has no project-level variables at
+all, so references are the only option there. Two processes holding two
+different buckets is the same failure as no bucket at all, arrived at less
+obviously.
+
+Leave `S3_REGION_NAME` at `auto` unless your provider needs a real region —
+AWS does, R2 does not.
+
+Keep the bucket private. Delivery URLs are signed, and
+[`SECURITY-BASELINE.md`](SECURITY-BASELINE.md) §9 is why — a public bucket
+hands out every uploaded file to anyone who guesses a key.
+
+---
+
+## Railway
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/brightbean-chat?referralCode=niwfCQ&utm_medium=integration&utm_source=template&utm_campaign=generic)
+
+The template provisions `Postgres`, `web` and `worker`, generates `SECRET_KEY`
+and `ENCRYPTION_KEY_SALT` once and shares them across both app services, and
+points `ALLOWED_HOSTS` and `APP_URL` at the domain Railway generates. It prompts
+for the one thing it cannot provision for you: a private S3-compatible bucket.
+
+[Cloudflare R2](#cloudflare-r2) below is the worked example for creating that
+bucket — AWS S3, Backblaze B2 and Railway Bucket differ only in how you fill the
+same five `S3_*` variables. Then read [First deploy](#first-deploy): `web` has
+to go green before `worker` starts, and that ordering applies to a template copy
+exactly as it does to a hand-built project.
+
+**The rest of this section builds the same three services by hand**, for a fork
+that needs its own template or a project that has to differ from it.
+
+The Dockerfile is what Railway builds. Configure the project in Railway's
+dashboard or use its `.railway/railway.ts` Infrastructure as Code. The old
+per-service `railway.json` files were removed because Railway no longer allows
+new services to opt into that format. Existing Railway services that used those
+files need their settings migrated before the next deployment, and before
+Railway's December 1, 2026 cutoff. See [Railway's Infrastructure as Code
+guide](https://docs.railway.com/infrastructure-as-code). A `railway.toml` added
+to this repository today would be read by nothing.
+
+The layout is three services — `Postgres`, `web`, `worker` — plus that bucket.
+
+### Before you start
+
+**Install Railway's GitHub App on the account that owns the repository.** For a
+repository under an organisation, an installation on your personal account is
+not enough. Railway's repository field validates any public repository's URL and
+reports "Valid GitHub repo", but creating the service needs an installation that
+covers it — so without one the button simply does nothing, with no error.
+Install it at `https://github.com/apps/railway-app/installations/new`, select the
+owning organisation, and grant access to this repository. The repository
+appearing in Railway's picker *by name* is the confirmation; having to paste a
+URL means the installation landed on the wrong account.
+
+**Generate the two crypto secrets** now, with distinct values:
+
+```console
+$ python -c "import secrets; [print(secrets.token_urlsafe(64)) for _ in range(2)]"
+```
+
+The first is `SECRET_KEY`, the second `ENCRYPTION_KEY_SALT`. Both are enforced
+at import time by `apps/common/checks.py` (`common.E001`, `common.E002`), and
+both are needed to read a database backup — keep them wherever you keep the
+backups.
+
+### Cloudflare R2
+
+1. **R2 → Create bucket.** One bucket per environment; `…-prod` and `…-staging`
+   keep a staging deploy from writing into production's media.
+2. **Leave it private.** Do not enable the `r2.dev` public URL and do not attach
+   a custom domain. Delivery is by presigned URL with a one-hour expiry, and
+   [`SECURITY-BASELINE.md`](SECURITY-BASELINE.md) §9 is why: a public bucket
+   hands out every uploaded file to anyone who guesses a key.
+3. **R2 → API → Create Account API token**, permission **Object Read & Write**,
+   scoped to that one bucket. One token per bucket, so a staging leak cannot
+   reach production media.
+
+| Variable | R2 value |
+|---|---|
+| `S3_BUCKET_NAME` | The bucket name |
+| `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | From the API token |
+| `S3_ENDPOINT_URL` | `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` — account-level, no bucket in the path |
+| `S3_REGION_NAME` | `auto` |
+| `S3_CUSTOM_DOMAIN` | **Unset.** |
+
+No CORS rules are needed: uploads go through Django with boto3, and the browser
+only ever loads the resulting URLs in `<img>` and `<video>`.
+
+`S3_CUSTOM_DOMAIN` has to stay unset because django-storages only signs
+custom-domain URLs when a CloudFront key pair is configured too, so a private
+bucket behind one serves unsigned URLs that 403 at delivery (`common.W001`
+explains this at boot). Leaving it unset is also what makes the Content Security
+Policy line up without further configuration: boto3 builds **path-style** URLs
+for a custom `endpoint_url` — `https://<account>.r2.cloudflarestorage.com/<bucket>/<key>` —
+so the origin `config/settings/base.py` derives from `S3_ENDPOINT_URL` and adds
+to `img-src` and `media-src` is the same origin the media is actually served
+from.
+
+### The services
+
+1. **Postgres.** `+ New → Database → Add PostgreSQL`. Leave it named `Postgres`;
+   the variable references below assume that name.
+2. **`web`**, from this repository. Railway detects the root Dockerfile.
+   - Public networking on, domain generated.
+   - Custom start command **empty** — the Dockerfile's `CMD` already binds
+     Gunicorn to `$PORT`.
+   - Pre-deploy command `python manage.py migrate --noinput`.
+   - Health-check path `/healthz`, timeout at least 120 seconds. `/healthz` does
+     a real database round-trip and answers 503 until Postgres is reachable, so
+     a short timeout fails the first deploy of an otherwise healthy app.
+3. **`worker`**, from the same repository and Dockerfile.
+   - Custom start command `python manage.py process_tasks`.
+   - No public domain, no health check, **no pre-deploy command** — migrations
+     belong to `web` alone. Two services migrating in parallel race on the same
+     DDL, which is also why `migrate && process_tasks` is the wrong start
+     command.
+   - **Cron Schedule empty.** A schedule turns the service into a cron job:
+     Railway runs the start command on that schedule and expects it to exit.
+     `process_tasks` never exits, so a schedule of, say, `0 0 * * *` leaves the
+     queue dead until midnight, after which every later execution is skipped
+     because the previous one is still running.
+   - **Serverless off** (Settings → Deploy → Serverless), if your plan offers
+     it. It is opt-in, so a new service already has it off. A sleeping worker
+     would never wake: Railway wakes a service on inbound traffic, and nothing
+     ever calls this one.
+   - Restart policy **Always** rather than On Failure. The worker exits *zero*
+     on SIGTERM, by design, so that a redeploy drains the batch in flight — and
+     On Failure does not restart a zero exit.
+   - Replicas can go past one. The claim statement uses `FOR UPDATE SKIP
+     LOCKED`, so concurrent workers take disjoint batches ([`SPEC.md`](SPEC.md)
+     §15). Redis and a separate scheduler are unnecessary.
+
+### Variables
+
+Set these on **both** app services. Project Settings → Shared Variables holds
+the values one service is not the natural owner of; either way `web` and
+`worker` must end up with *identical* values for the secrets and the storage
+configuration.
+
+| Variable | `web` | `worker` |
+|---|---|---|
+| `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` | `${{Postgres.DATABASE_URL}}` |
+| `DJANGO_SETTINGS_MODULE` | `config.settings.production` | same |
+| `DJANGO_ENV_FILE` | `/nonexistent` | same |
+| `SECRET_KEY`, `ENCRYPTION_KEY_SALT` | The two generated secrets | `${{web.SECRET_KEY}}`, `${{web.ENCRYPTION_KEY_SALT}}` |
+| `ALLOWED_HOSTS` | `${{RAILWAY_PUBLIC_DOMAIN}},healthcheck.railway.app` | `${{web.RAILWAY_PUBLIC_DOMAIN}}` |
+| `APP_URL` | `https://${{RAILWAY_PUBLIC_DOMAIN}}` | `https://${{web.RAILWAY_PUBLIC_DOMAIN}}` |
+| `TRUSTED_PROXIES` | `127.0.0.1/32,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` | same |
+| `STORAGE_BACKEND` | `s3` | `s3` |
+| `S3_*` | The bucket's five values | `${{web.S3_BUCKET_NAME}}` and so on |
+
+Reference `web`'s values from `worker` rather than typing them twice. A typo in
+`SECRET_KEY`, `ENCRYPTION_KEY_SALT` or the bucket credentials does not fail
+anything at boot: the worker starts, and then cannot decrypt the channel
+credentials `web` wrote, or writes media into a bucket `web` does not read.
+Both surface days later as one broken feature. `${{RAILWAY_PUBLIC_DOMAIN}}` and
+`${{web.RAILWAY_PUBLIC_DOMAIN}}` also mean the hostnames configure themselves,
+including in a duplicated environment.
+
+The service Variables tab has a **Raw Editor** that accepts `.env` format, which
+is quicker and less error-prone than adding a dozen rows by hand.
+
+Two Railway-specific traps are worth stating outright:
+
+- **`healthcheck.railway.app` is not optional.** Railway sends the health probe
+  with that exact `Host` header. Without the entry, Django answers 400 and the
+  deployment fails while Gunicorn is running perfectly. The public hostname
+  alone is insufficient.
+- **Attaching a custom domain needs both `ALLOWED_HOSTS` and `APP_URL` updated**
+  by hand — the `${{RAILWAY_PUBLIC_DOMAIN}}` reference keeps resolving to the
+  `.up.railway.app` name. Do it before inviting anyone: migration
+  `accounts.0002_site_from_app_url` reads `APP_URL` once, when it first runs, to
+  set the Django `Site` that allauth puts in account emails. Correcting
+  `APP_URL` later does not rewrite that row; the admin does.
+
+### First deploy
+
+Deploy **`web` first and let it go green**, then deploy `worker`. Railway has no
+cross-service ordering, and until `web`'s pre-deploy migration has run, the
+worker is talking to a database with no tables: it raises on the first claim,
+exits non-zero, and restarts. That self-heals — but a fresh environment can burn
+the whole restart budget before the first migration lands, and a worker that has
+exhausted its retries stays down silently. Raising the retry count is the other
+way round it.
+
+Then check the three things that fail independently:
+
+```console
+$ curl -fsS https://<your-web-domain>/healthz
+```
+
+the worker's logs (it should be claiming batches, not exiting), and an actual
+upload — a media file that renders after a reload proves the presigning, the
+bucket policy and the CSP origin all agree.
+
+### Staging and production environments
+
+A Railway environment is an isolated copy of every service in the project, and
+all variables are scoped to one. `production` exists already.
+
+1. **Environment dropdown → `+ New Environment` → Duplicate Environment**, from
+   `production`. Services, configuration and variables are copied as *staged*
+   changes, which nothing applies until you approve them.
+2. **While they are still staged**, change what must not be shared:
+   - **Source branch** on `web` and `worker` — point staging at a `staging`
+     branch. Per-environment deploy triggers live in Project Settings →
+     Environments.
+   - **New `SECRET_KEY` and `ENCRYPTION_KEY_SALT`.** One exception, and it
+     inverts the rule: if you ever restore a *production* database dump into
+     staging, staging needs production's two values or every encrypted
+     credential in that dump is unreadable.
+   - **The staging bucket and its own token** in the `S3_*` variables.
+   - **SMTP** pointed at a sandbox, or `EMAIL_BACKEND_TYPE=console`, so
+     staging's invitations and password resets cannot reach real people. These
+     variables do not touch the email channel, whose credentials live in the
+     database with the rest of the channel connections.
+   - A generated domain for staging's `web`. The `${{RAILWAY_PUBLIC_DOMAIN}}`
+     references above pick it up on their own.
+3. **Deploy.** The duplicated Postgres is a new, empty instance — no data is
+   copied, and `web`'s pre-deploy migration builds the schema. Which means the
+   [First deploy](#first-deploy) ordering applies again here.
+
+Channel credentials do **not** duplicate usefully. Every platform registers one
+callback URL per app or number, so staging needs its own Telegram bot and its
+own Meta test app. Pointing production's credentials at a staging domain
+redirects live traffic.
+
+---
+
+## Running without a worker (tick mode)
+
+Some hosts cannot run a second always-on process. `/internal/tick` is an HTTP
+wrapper around one worker cycle for exactly that case: point a scheduler at it
+and the queue drains on a timer instead of continuously.
+
+1. Set `TICK_TOKEN` to a long random value (`make prod-secrets` prints one).
+2. Point a cron service or uptime pinger at
+   `https://<your-host>/internal/tick?token=<TICK_TOKEN>` on a schedule.
+
+The route answers 404 while `TICK_TOKEN` is unset, so leaving it empty exposes
+nothing. It is safe to run alongside a real worker — the claim statement makes
+overlapping drains correct by construction — so you can add it as a safety net
+rather than an alternative.
+
+**What it costs.** Everything time-based becomes as late as the gap between
+ticks:
+
+| Scheduler | Granularity | A 1-minute Smart Delay fires |
+|---|---|---|
+| `cron` on a host you control | 1 minute | within ~1 minute |
+| Uptime pinger / cron-job.org | 1 minute | within ~1 minute |
+| A scheduler with a 5-minute floor | 5 minutes | within ~5 minutes |
+| A scheduler with a 10-minute floor | 10 minutes | within ~10 minutes |
+
+The bottom two rows are the reason to check your scheduler's *minimum* interval
+before relying on tick mode. Many managed cron products will not go below five
+or ten minutes, and that number becomes the latency of every delay, every
+sequence step and every retry in the deployment.
+
+One request drains up to 10 actions and gives up after 20 seconds — deliberately
+inside gunicorn's 30-second worker timeout, so a tick is never killed mid-batch.
+A large backlog therefore needs several ticks to clear, which is another way of
+saying: tick mode is a fallback, and a real worker is the answer for anything
+with volume.
+
+On a host you control, `python manage.py tick` is the same drain as a one-shot
+command (55-second budget, sized for a once-a-minute cron).
+
+---
+
+## Environment variables
+
+[`deploy/env.prod.example`](../deploy/env.prod.example) is the production
+template — copy it, do not copy `.env.example` (that one is the development
+template, and every value in it is a working local default).
+
+The complete reference, including every optional limit and tunable, is
+[`.env.example`](../.env.example) at the repository root. What a production
+deployment actually decides:
+
+### Required
+
+| Variable | What it is |
+|---|---|
+| `SECRET_KEY` | Django's signing key, and the input to credential encryption. The app refuses to boot without it outside `DEBUG`. |
+| `ENCRYPTION_KEY_SALT` | HKDF salt for the AES-256-GCM encrypted fields. A *different* random value. |
+| `ALLOWED_HOSTS` | Hostnames this deployment answers on. Anything else gets a 400. Derived from `APP_DOMAIN` in the compose stack. |
+| `APP_URL` | The public origin, with scheme. Unsubscribe, click-tracking and media links are built from it. |
+| `DATABASE_URL` | Postgres connection string. |
+| `DJANGO_SETTINGS_MODULE` | `config.settings.production`. |
+
+### Deployment-specific
+
+| Variable | What it is |
+|---|---|
+| `APP_DOMAIN` | Compose only: the one hostname that configures Caddy, `ALLOWED_HOSTS` and `APP_URL`. |
+| `ACME_EMAIL` | Compose only: where Let's Encrypt sends certificate notices. |
+| `POSTGRES_PASSWORD` / `POSTGRES_USER` / `POSTGRES_DB` | Compose only: the bundled database. Set before the first start. |
+| `IMAGE_TAG` | Which image tag the compose stack runs. The [upgrade](#upgrades) knob. |
+| `TRUSTED_PROXIES` | Which peers may set `X-Forwarded-For`. Empty ignores the header entirely, which turns per-caller auth rate limiting into per-deployment. |
+| `DJANGO_ENV_FILE` | Set to `/nonexistent` so the environment is the only source of configuration. |
+
+### Platform and behaviour ([`SPEC.md`](SPEC.md) §20)
+
+| Variable | What it is |
+|---|---|
+| `PLATFORM_<PLATFORM>_CLIENT_ID` / `_CLIENT_SECRET` | The Meta app credentials, and the first step of the resolution chain — an organization row in the Django admin is the fallback below them. Meta platforms only. |
+| `PLATFORM_<PLATFORM>_VERIFY_TOKEN` | The token Meta checks when you subscribe a webhook URL. Unset means that platform's verification GET answers 404. |
+| `TICK_TOKEN` | Shared secret for `/internal/tick`. Unset means the route does not exist. |
+| `EXTERNAL_REQUEST_ALLOW_PRIVATE` | Lets the External Request node reach private address ranges, for an on-prem deployment calling services on its own network. It relaxes *only* the private-range rule — loopback, cloud metadata, multicast and this deployment's own host stay denied ([`SECURITY-BASELINE.md`](SECURITY-BASELINE.md) §6). |
+| `DEFAULT_SEND_RATE_OVERRIDES` | JSON per-platform send rates, when your app's limits differ from the published defaults. An unknown platform or a non-positive value fails a startup check rather than being ignored. |
+| `EMAIL_HOST` and friends | SMTP for the deployment's own account email: password reset, address verification, invitations and notifications. STARTTLS only, so port 587. Not used by the email channel, which has its own credentials per connection. |
+| `STORAGE_BACKEND` / `S3_*` | `local` (a shared volume) or `s3` (S3, R2, B2, MinIO). `local` requires the web and worker processes to share a filesystem, which is true of the compose stack and of no PaaS — see [Storage](#storage-when-web-and-worker-are-separate). |
+| `SENTRY_DSN` | Optional error reporting; empty disables it. |
+
+---
+
+## Backups
+
+Two things need backing up, and **they must not live in the same place**.
+
+### The database
+
+```bash
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  sh -c 'pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB"' > backup-$(date +%F).dump
+```
+
+The user and database names are read from the container's own environment
+rather than written out here, so this keeps working if you set `POSTGRES_USER`
+or `POSTGRES_DB` in `.env` — hardcoding the defaults would give you a backup of
+the wrong database, or no backup at all, and you would find out at restore time.
+
+Restore into a fresh stack:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --wait postgres
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists' < backup-2026-01-31.dump
+docker compose -f docker-compose.prod.yml up -d
+```
+
+`--wait` is not optional on the first line. Without it `up -d` returns as soon
+as the container has *started*, and on a fresh volume Postgres is still
+initialising — so `pg_restore` runs against a server that is not accepting
+connections yet and fails for a reason that has nothing to do with your dump.
+
+### The keys
+
+`SECRET_KEY` and `ENCRYPTION_KEY_SALT` are not in the dump, and they are what
+decrypt what *is* in it.
+
+**Treat a dump as a secret.** It contains your contacts, your message history,
+and the encrypted platform credentials for every channel you have connected —
+bot tokens, page access tokens, Twilio credentials, SMTP passwords. Encrypt it
+at rest and restrict who can read it.
+
+**Store the keys somewhere else.** A password manager or a secrets service, not
+next to the dump. Kept apart, a stolen dump is inert and stolen keys are
+useless; kept together they are one compromise. Kept nowhere, a restored dump is
+a database full of credentials nobody can read — and the recovery for that is
+re-connecting every channel by hand.
+
+### Uploaded media
+
+Media lives in the `media_data` volume (or in your S3 bucket, if
+`STORAGE_BACKEND=s3`):
+
+```bash
+docker run --rm -v brightbean-chat_media_data:/media -v "$PWD":/backup alpine \
+  tar czf /backup/media-$(date +%F).tar.gz -C /media .
+```
+
+---
+
+## Upgrades
+
+```bash
+git pull
+docker compose -f docker-compose.prod.yml build
+docker compose -f docker-compose.prod.yml run --rm migrate
+docker compose -f docker-compose.prod.yml up -d
+```
+
+**There is no published image to pull.** This project builds its image from
+source and does not push one to a registry, so `IMAGE_TAG` names the image this
+file builds locally — `docker compose pull` has nothing to fetch. Building on
+the host is the supported upgrade, and it is what the commands above do.
+
+If you run a fork that *does* publish an image, point `IMAGE_REPOSITORY` at it
+in `.env` (`ghcr.io/you/brightbean-chat`, say) and `IMAGE_TAG` at the release;
+then `pull` works and you can skip the build:
+
+```bash
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml run --rm migrate   # or: make prod-migrate
+docker compose -f docker-compose.prod.yml up -d
+```
+
+The one-shot `migrate` service runs the same migrations the stack runs at boot,
+so running it explicitly first is belt and braces — it means the new image
+starts against a schema that is already current instead of migrating while the
+old release is still serving.
+
+Take a database backup before an upgrade that includes migrations. Migrations
+are not reversible in general, and the version you roll back to may not
+understand the schema the newer one wrote.
+
+Then re-run the smoke script.
+
+---
+
+## Hardening checklist
+
+The application-level items are [`SECURITY-BASELINE.md`](SECURITY-BASELINE.md)'s
+job and CI enforces the automatable ones. These are yours:
+
+- [ ] **Firewall the host.** Allow 22, 80 and 443. Nothing else needs to be
+      reachable — the compose stack publishes nothing but Caddy's two ports.
+- [ ] **Postgres is not published.** `docker compose -f docker-compose.prod.yml ps`
+      must show no host port against `postgres`. Verify from outside with
+      `scripts/smoke.sh --db-host <your-host>`.
+- [ ] **`DEBUG` is off.** `config.settings.production` forces it off before it
+      loads anything else, so this is true by construction — but confirm the
+      settings module is what you think it is if you customised anything.
+- [ ] **`ALLOWED_HOSTS` names your hosts and nothing else.** No `*`, no bare
+      `.up.railway.app` — a wildcard on a shared PaaS apex is a
+      Host-header attack against every link the app generates.
+- [ ] **The secrets are real and unique to this deployment.** The app refuses to
+      boot on a blank or placeholder value, but it cannot tell you that you
+      pasted the same key into staging.
+- [ ] **Back up the keys separately from the dump**, and treat the dump itself as
+      a credential store ([Backups](#backups)).
+- [ ] **`TRUSTED_PROXIES` names the thing in front and nothing else.** Empty
+      means the rate limiters cannot tell callers apart behind a proxy; too wide
+      means a caller can forge `X-Forwarded-For` and evade them entirely.
+- [ ] **Every webhook URL you register is `https://`.** Signatures protect
+      integrity, not confidentiality; message bodies travel in the request.
+- [ ] **Keep the image current.** `git pull && docker compose … build` picks up
+      dependency updates. CI runs `pip-audit` and `npm audit` on every change
+      ([`SECURITY-BASELINE.md`](SECURITY-BASELINE.md) §10), so an out-of-date
+      deployment is the only place a known-vulnerable dependency can survive.
+- [ ] **Restrict who can reach `/admin/`** if you do not need it exposed, and give
+      the Django superuser a password manager entry rather than a memorable
+      password.
+- [ ] **Rotate `TICK_TOKEN`** if you ever put it in a URL somewhere it might be
+      logged — it is a credential, and anyone holding it can make your web
+      process do queue work.
+- [ ] **Watch `/healthz`** with something that will tell you. It fails closed on
+      a database problem, which is the failure you want to hear about first.
+
+Found a vulnerability in the software rather than in a deployment? See
+[`SECURITY.md`](../.github/SECURITY.md).
+
+---
+
+## Troubleshooting
+
+**Every request returns 400, including `/healthz`.** The `Host` header is not in
+`ALLOWED_HOSTS`. On the compose stack that means `APP_DOMAIN` does not match the
+name you are visiting; on a PaaS it means the prompt was answered with the wrong
+hostname, or you attached a domain and did not add it.
+
+**The container never becomes healthy and Caddy never starts.** Caddy waits for
+the app's health check. Read `docker compose -f docker-compose.prod.yml logs app`
+— a boot refusal names exactly which variable is missing, and a 400 in the log
+is the `ALLOWED_HOSTS` case above.
+
+**`docker compose up` exits immediately with "required variable … is missing a
+value".** That is the intended behaviour with an incomplete `.env`. The message
+names the variable.
+
+**The certificate is not issued.** DNS must resolve to this host and port 80
+must be reachable from the internet before Caddy can complete the ACME
+challenge. `docker compose -f docker-compose.prod.yml logs caddy` says which of
+the two failed.
+
+**Messages send, but delays and sequences never fire.** The worker is not
+running. `docker compose -f docker-compose.prod.yml ps` should show a `worker`
+service; on Railway, check the `worker` service is deployed and not crash-looping. See
+[Two processes, not one](#two-processes-not-one).
+
+**A Meta webhook subscription fails verification.** The platform's
+`PLATFORM_<PLATFORM>_VERIFY_TOKEN` is unset (the endpoint answers 404) or does
+not match what you typed into Meta's dashboard (403).
+
+**Stored credentials stopped decrypting after a restore.** `SECRET_KEY` or
+`ENCRYPTION_KEY_SALT` differs from the one in use when they were written. They
+are not in the dump; restore them from wherever you put them in step 2.
+
+## Billing
+
+You do not need it. BrightBean Chat has one tier and every feature is in it;
+there is no payment provider to configure and no limit counted on a
+self-hosted install. [`docs/billing.md`](billing.md) documents the optional
+Stripe integration for operators running BrightBean Chat as a paid service.

@@ -1,0 +1,287 @@
+"""ROADMAP contract 4: the registry, the policy table and the capability table.
+
+The point of these tests is that the contract is *fixed*. A Layer-5 adapter
+author who renames a field or drops a platform breaks this file rather than
+breaking L2-D's builder warnings or L3-A's compliance engine, neither of which
+would notice until something got sent — or failed to be.
+"""
+
+import dataclasses
+
+import pytest
+
+from apps.channels.capabilities import CAPABILITIES, Capabilities, capabilities_for
+from apps.channels.policy import POLICIES, NeedsTag, PlatformPolicy, policy_for
+from apps.channels.providers.base import Adapter
+from apps.channels.registry import (
+    AdapterNotRegisteredError,
+    adapter_for,
+    entry_for,
+    has_adapter,
+    register_adapter,
+    registered_platforms,
+)
+from apps.channels.tests.fake_adapter import fake_adapter_for, registered, swapped_adapter, unregistered
+from apps.common.platforms import Platform
+
+
+class TestTablesCoverEveryPlatform:
+    def test_every_platform_has_capabilities(self) -> None:
+        assert set(CAPABILITIES) == set(Platform.values)
+
+    def test_every_platform_has_a_policy(self) -> None:
+        assert set(POLICIES) == set(Platform.values)
+
+    def test_unknown_platform_raises_rather_than_defaulting(self) -> None:
+        # Defaulting would answer "no window, no tags, broadcast away", which is
+        # the most permissive reading available.
+        with pytest.raises(KeyError):
+            capabilities_for("carrier-pigeon")
+        with pytest.raises(KeyError):
+            policy_for("carrier-pigeon")
+
+
+class TestContractFieldsAreExactlyAsWritten:
+    """ROADMAP contract 4 spells the dataclass out; this asserts the spelling."""
+
+    def test_platform_policy_fields(self) -> None:
+        fields = {f.name for f in dataclasses.fields(PlatformPolicy)}
+        assert fields == {
+            "window_hours",
+            "outside_window",
+            "human_agent_days",
+            "broadcast_allowed",
+            "rate_default",
+        }
+
+    def test_needs_tag_fields(self) -> None:
+        assert {f.name for f in dataclasses.fields(NeedsTag)} == {"tags", "allowed_use_text"}
+
+    #: SPEC §6.1 writes the capability list out in full. Every one of these must
+    #: exist, under this name, or L2-D's builder warnings read a field that is
+    #: not there.
+    SPEC_6_1_FLAGS = {
+        "text",
+        "image",
+        "audio",
+        "video",
+        "file",
+        "card",
+        "gallery",
+        "buttons",
+        "quick_replies",
+        "url_buttons",
+        "typing_indicator",
+        "proactive_send",
+        "window_hours",
+        "tags_supported",
+        "max_buttons",
+        "max_quick_replies",
+        "max_text_len",
+        "broadcast_allowed",
+        "inbound",
+    }
+
+    #: Beyond §6.1, and deliberately. Issue #19 folded
+    #: ``apps.media_library.platform_limits``'s own per-platform byte table into
+    #: this one, which is what its ``TODO(#4)`` asked for — the alternative was
+    #: two tables answering one question, and they had already drifted.
+    MEDIA_CEILING_FIELDS = {"max_image_bytes", "max_audio_bytes", "max_video_bytes", "max_file_bytes"}
+
+    #: Also beyond §6.1. ``interaction_is_exclusive`` says the two control kinds
+    #: share one budget, which the downgrade renderer has to know: filling
+    #: ``max_buttons`` and ``max_quick_replies`` independently on a platform
+    #: that can show only one of them produced a message whose extra options the
+    #: adapter could only drop, unnumbered and unreachable.
+    RENDERING_FIELDS = {"interaction_is_exclusive"}
+
+    #: Also beyond §6.1, added by issue #23. ``counts_segments`` says a message on
+    #: this platform is billed by GSM 03.38 segment, which the two composers that
+    #: have to show a count before somebody sends both ask — and which nothing
+    #: else in this table answers: ``max_text_len`` is a number rather than a
+    #: billing model, and SMS carries images (MMS), so "text only" does not
+    #: identify it either.
+    BILLING_FIELDS = {"counts_segments"}
+
+    def test_capabilities_carries_every_spec_6_1_flag(self) -> None:
+        fields = {f.name for f in dataclasses.fields(Capabilities)}
+        assert fields == (self.SPEC_6_1_FLAGS | self.MEDIA_CEILING_FIELDS | self.RENDERING_FIELDS | self.BILLING_FIELDS)
+
+    def test_only_a_segment_billed_platform_declares_it(self) -> None:
+        """SPEC §6.6 names one: SMS. A second would need its own §6 subsection."""
+        declared = {platform for platform in Platform.values if capabilities_for(platform).counts_segments}
+
+        assert declared == {Platform.SMS}
+
+    def test_a_media_ceiling_is_published_only_for_a_kind_the_platform_takes(self) -> None:
+        """A ceiling on an unsupported kind is the drift #19 removed.
+
+        The old table gave SMS a 5 MB image ceiling while this one said SMS
+        carries no images at all, and the picker answered from whichever it
+        happened to read first.
+        """
+        for platform in Platform.values:
+            capabilities = capabilities_for(platform)
+            for kind in ("image", "audio", "video", "file"):
+                if capabilities.max_bytes_for(kind):
+                    assert capabilities.supports_block(kind), f"{platform} caps {kind} it cannot send"
+
+    def test_max_bytes_for_answers_only_about_media_kinds(self) -> None:
+        # Same containment supports_block() has: the lookup is by name, and an
+        # unconstrained getattr would answer for a field that is not a kind.
+        assert capabilities_for(Platform.WHATSAPP).max_bytes_for("text") == 0
+        assert capabilities_for(Platform.WHATSAPP).max_bytes_for("text_len") == 0
+
+    def test_only_whatsapp_has_an_exclusive_interaction(self) -> None:
+        """Every other platform shows buttons and quick replies together."""
+        exclusive = {p for p in Platform.values if capabilities_for(p).interaction_is_exclusive}
+        assert exclusive == {Platform.WHATSAPP}
+
+    def test_tables_are_frozen(self) -> None:
+        # Module-level singletons shared by every request in the worker.
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            policy_for(Platform.TELEGRAM).rate_default = 1.0  # type: ignore[misc]
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            capabilities_for(Platform.TELEGRAM).text = False  # type: ignore[misc]
+
+
+class TestTheTwoTablesAgree:
+    """window_hours and broadcast_allowed appear in both. They must not drift."""
+
+    @pytest.mark.parametrize("platform", Platform.values)
+    def test_window_hours_matches(self, platform: str) -> None:
+        assert capabilities_for(platform).window_hours == policy_for(platform).window_hours
+
+    @pytest.mark.parametrize("platform", Platform.values)
+    def test_broadcast_allowed_matches(self, platform: str) -> None:
+        assert capabilities_for(platform).broadcast_allowed == policy_for(platform).broadcast_allowed
+
+
+class TestSpecValues:
+    """The handful of values SPEC §§6 and 8 state outright."""
+
+    def test_instagram_blocks_automation_outside_the_window(self) -> None:
+        policy = policy_for(Platform.INSTAGRAM)
+        assert policy.window_hours == 24
+        assert policy.outside_window == "blocked"
+        assert policy.human_agent_days == 7
+        assert policy.broadcast_allowed is False
+
+    def test_messenger_needs_a_non_promotional_tag(self) -> None:
+        policy = policy_for(Platform.MESSENGER)
+        assert isinstance(policy.outside_window, NeedsTag)
+        assert set(policy.outside_window.tags) == {
+            "CONFIRMED_EVENT_UPDATE",
+            "POST_PURCHASE_UPDATE",
+            "ACCOUNT_UPDATE",
+        }
+        # SPEC §6.4 requires the composer to display Meta's allowed-use text.
+        assert policy.outside_window.allowed_use_text
+
+    def test_whatsapp_needs_a_template(self) -> None:
+        assert policy_for(Platform.WHATSAPP).outside_window == "needs_template"
+
+    def test_windowless_platforms_say_so(self) -> None:
+        for platform in (Platform.TELEGRAM, Platform.SMS, Platform.EMAIL):
+            assert policy_for(platform).has_window() is False
+
+    def test_rate_defaults_match_spec_8(self) -> None:
+        assert {p: policy_for(p).rate_default for p in Platform.values} == {
+            Platform.TELEGRAM: 25.0,
+            Platform.INSTAGRAM: 8.0,
+            Platform.MESSENGER: 40.0,
+            Platform.WHATSAPP: 20.0,
+            Platform.SMS: 1.0,
+            Platform.EMAIL: 10.0,
+        }
+
+    def test_email_is_outbound_only(self) -> None:
+        # SPEC §6.7. The /webhooks/email/ route carries bounce notifications,
+        # not inbound messages.
+        assert capabilities_for(Platform.EMAIL).inbound is False
+
+
+class TestSupportsBlock:
+    def test_known_kinds_read_their_flag(self) -> None:
+        telegram = capabilities_for(Platform.TELEGRAM)
+        assert telegram.supports_block("image") is True
+        assert telegram.supports_block("gallery") is False
+
+    def test_unknown_kinds_are_unsupported(self) -> None:
+        assert capabilities_for(Platform.TELEGRAM).supports_block("hologram") is False
+
+    def test_non_block_attributes_cannot_be_read_as_blocks(self) -> None:
+        # `inbound` and `broadcast_allowed` are True for Telegram; asking for
+        # them as a block kind must still answer False.
+        telegram = capabilities_for(Platform.TELEGRAM)
+        assert telegram.supports_block("inbound") is False
+        assert telegram.supports_block("broadcast_allowed") is False
+
+
+class TestRegistry:
+    def test_entry_is_complete_without_an_adapter(self) -> None:
+        """The property L2-D depends on: policy and capabilities today, adapters later.
+
+        ``unregistered`` rather than naming a platform that happens to have no
+        adapter yet: every Layer-5 issue fills one more slot, and a test that
+        picked whichever was still empty would have to be rewritten five times
+        and would silently stop testing anything on the sixth. #17 and #19 both
+        landed on this one.
+        """
+        with unregistered(Platform.WHATSAPP):
+            entry = entry_for(Platform.WHATSAPP)
+            assert entry.adapter_cls is None
+            assert entry.policy is policy_for(Platform.WHATSAPP)
+            assert entry.capabilities is capabilities_for(Platform.WHATSAPP)
+
+    def test_register_and_resolve(self) -> None:
+        with registered(Platform.TELEGRAM) as adapter_cls:
+            assert has_adapter(Platform.TELEGRAM)
+            # The contract is **enum order**, and it is asserted against
+            # Platform.values rather than against the function's own filter —
+            # comparing to `tuple(v for v in Platform.values if has_adapter(v))`
+            # would restate registered_platforms()' implementation and could
+            # never fail. Every shipped adapter registers itself at startup, so
+            # the *membership* is not pinned to a literal; the ordering is.
+            platforms = registered_platforms()
+            assert Platform.TELEGRAM in platforms
+            assert list(platforms) == sorted(platforms, key=Platform.values.index)
+            assert isinstance(adapter_for(Platform.TELEGRAM), adapter_cls)
+            assert isinstance(adapter_for(Platform.TELEGRAM), Adapter)
+        # Restored, not cleared. Telegram has a real adapter since issue #12 and
+        # `registered` puts it back; the property under test is that the fake
+        # does not outlive the block, not that the slot ends up empty.
+        assert has_adapter(Platform.TELEGRAM)
+        assert not isinstance(adapter_for(Platform.TELEGRAM), adapter_cls)
+
+    def test_missing_adapter_raises_rather_than_returning_none(self) -> None:
+        # On the webhook path, None would read as "nothing to do" — a silently
+        # dropped delivery.
+        with unregistered(Platform.WHATSAPP), pytest.raises(AdapterNotRegisteredError):
+            adapter_for(Platform.WHATSAPP)
+
+    def test_unknown_platform_cannot_be_registered(self) -> None:
+        with pytest.raises(ValueError, match="Unknown platform"):
+            register_adapter("carrier-pigeon", fake_adapter_for(Platform.TELEGRAM))
+
+    def test_double_registration_is_refused(self) -> None:
+        with registered(Platform.TELEGRAM), pytest.raises(ValueError, match="already has an adapter"):
+            register_adapter(Platform.TELEGRAM, fake_adapter_for(Platform.TELEGRAM))
+
+    def test_registering_the_same_class_twice_is_idempotent(self) -> None:
+        """Arranged rather than borrowed, which is the whole lesson here.
+
+        This test has now been rehomed twice by the platform it borrowed: SMS
+        held the role until #20 shipped an adapter, the comment moved it to
+        WhatsApp, and #19 shipped one for that. ``swapped_adapter`` is what its
+        own comment already named as the way out — it puts the fake in
+        whatever the slot currently holds and *restores* the real adapter
+        afterwards, where the previous ``finally: unregister_adapter(...)`` left
+        the slot empty for every later test in the process.
+        """
+        adapter_cls = fake_adapter_for(Platform.WHATSAPP)
+        with swapped_adapter(Platform.WHATSAPP, adapter_cls):
+            # The slot already holds this class; registering it again is the
+            # no-op under test rather than the duplicate the guard refuses.
+            register_adapter(Platform.WHATSAPP, adapter_cls)
+            assert adapter_for(Platform.WHATSAPP).__class__ is adapter_cls

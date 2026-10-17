@@ -1,0 +1,195 @@
+{% extends "base.html" %}
+{% comment %}
+Home — the workspace landing page.
+
+The redesign turned this from a wall of equal-weight numbers into a page with
+an order of importance: what still needs setting up, what you could start from,
+how last week went, and what is waiting on a person. One primary action.
+
+`kpis` is None in a deployment with no analytics app, and on a page for someone
+without `view_analytics`. The figures section is simply absent then rather than
+rendering as zeros — the same contract the KPI cards had before.
+
+The workspace switcher used to live at the bottom of this page. It is in the
+header now, on every page, which is where somebody looking for it actually
+goes.
+{% endcomment %}
+
+{% block title %}{{ request.workspace.name }} · Quikro{% endblock %}
+
+{% block content %}
+<div class="w-full">
+
+    <div class="flex flex-wrap items-end justify-between gap-6 mb-7">
+        <div>
+            <div class="flex items-center gap-2 mb-1.5">
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold" style="background: var(--brand-50); color: var(--brand-600); border: 1px solid var(--brand-200);">
+                    <span class="w-1.5 h-1.5 rounded-full animate-pulse" style="background: var(--brand-500);"></span>
+                    Quikro Workspace
+                </span>
+            </div>
+            <h1 class="page-title text-2xl font-bold tracking-tight" style="color: var(--neutral-900);">{{ greeting }}, {{ request.user.display_name }}</h1>
+        </div>
+        {% comment %}
+          One orange control per screen (HANDOFF §2.1): while setup is
+          unfinished, its next step's button below is the thing to do, so this
+          one steps back to secondary until setup is done.
+        {% endcomment %}
+        {% if can_edit_flows %}
+        <a class="{% if setup_remaining %}btn-pill-secondary{% else %}btn-pill-primary{% endif %} flex-shrink-0" href="{% url 'flows:list' workspace_id=request.workspace.id %}">
+            {% include "partials/_nav_icon.html" with name="flows" icon_size=16 %} New flow
+        </a>
+        {% endif %}
+    </div>
+
+    {% comment %}
+      The setup checklist. Present only while something is unfinished — a
+      permanent "you have done everything" panel is furniture, and this is the
+      one part of the page that should disappear for good.
+    {% endcomment %}
+    {% if setup_incomplete %}
+    <section class="card p-6 mb-5">
+        <div class="flex flex-wrap items-center justify-between gap-4 mb-4">
+            <div>
+                <h2 class="section-title text-base font-bold">Finish setting up</h2>
+                <p class="text-[13px] mt-1" style="color: var(--text-tertiary);">
+                    {{ setup_remaining }} step{{ setup_remaining|pluralize }} left. About five minutes.
+                </p>
+            </div>
+            <div class="flex items-center gap-3">
+                <div class="w-[180px] h-2 rounded-full overflow-hidden" style="background: var(--surface-2);">
+                    <div class="h-full rounded-full transition-all duration-300" style="width: {{ setup_percent }}%; background: linear-gradient(90deg, var(--brand-500) 0%, #8B5CF6 100%);"></div>
+                </div>
+                <span class="text-[13px] font-semibold" style="color: var(--brand-600);">{{ setup_done }} of {{ setup_steps|length }}</span>
+            </div>
+        </div>
+        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {% for step in setup_steps %}
+            <div class="tile{% if step.current %} tile-selected{% endif %} p-[18px]">
+                <div class="flex items-center gap-2.5 mb-2.5">
+                    {% if step.done %}
+                    <span class="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0"
+                          style="background: #10B981; color: var(--text-inverse);">
+                        <svg width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+                    </span>
+                    <span class="text-sm font-semibold line-through" style="color: var(--text-tertiary);">{{ step.title }}</span>
+                    {% else %}
+                    <span class="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-bold"
+                          style="background: {% if step.current %}var(--brand-600); color: #FFFFFF{% else %}var(--surface-2); color: var(--text-tertiary){% endif %};">{{ step.number }}</span>
+                    <span class="text-sm {% if step.current %}font-bold text-violet-950{% else %}font-semibold{% endif %}" style="color: var(--text-primary);">{{ step.title }}</span>
+                    {% endif %}
+                </div>
+                <p class="text-[13px] leading-relaxed" style="color: {% if step.done %}var(--text-ghost){% else %}var(--text-secondary){% endif %};">
+                    {% if step.done %}{{ step.done_body }}{% else %}{{ step.body }}{% endif %}
+                </p>
+                {% comment %}
+                  One live call to action, on the current step only. The view
+                  marks exactly one step current — the first unfinished one —
+                  because the list is ordered by dependency and a flow with no
+                  channel has nothing to reply on. Offering all three at once
+                  is the thing the redesign set out to stop, and `actionable`
+                  drops the link again for a member the page behind it would
+                  refuse.
+                {% endcomment %}
+                {% if not step.done and step.current and step.actionable %}
+                <a class="btn-pill-primary btn-pill-sm mt-3.5 inline-flex items-center gap-1.5" href="{{ step.url }}">{{ step.cta }} →</a>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+    </section>
+    {% endif %}
+
+    {% if flow_templates and can_edit_flows %}
+    <section class="card p-[22px] mb-5">
+        <div class="flex flex-wrap items-center justify-between gap-4 mb-4">
+            <div>
+                <h2 class="section-title text-base font-bold">Start from a template</h2>
+                <p class="text-[13px] mt-1" style="color: var(--text-tertiary);">
+                    {{ flow_template_total }} ready-made flow{{ flow_template_total|pluralize }}. Pick one and change the words to suit you.
+                </p>
+            </div>
+            <a class="btn-pill-secondary btn-pill-sm flex-shrink-0" href="{% url 'flows:template_gallery' workspace_id=request.workspace.id %}">Browse all {{ flow_template_total }}</a>
+        </div>
+        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {% comment %}
+              A form, not a link: picking a template writes a FlowImport row,
+              and a state-changing GET is both CSRF-exposed and prefetchable.
+              It lands on the same review-and-dry-run step an uploaded file
+              does — a shipped template gets no shortcut past validation.
+            {% endcomment %}
+            {% for template in flow_templates %}
+            {% include "flows/_template_tile.html" %}
+            {% endfor %}
+        </div>
+    </section>
+    {% endif %}
+
+    <div class="grid gap-5 lg:grid-cols-[1.55fr_1fr] items-start">
+        {% if kpis %}
+        <section class="card p-6">
+            <div class="flex items-baseline justify-between mb-4">
+                <h2 class="section-title text-base font-bold">Last 7 days</h2>
+                {% if can_view_analytics %}
+                <a class="text-[13px] font-semibold underline underline-offset-2 transition-colors hover:text-violet-600" style="color: var(--brand-600);"
+                   href="{% url 'analytics:overview' workspace_id=request.workspace.id %}?days=7">See insights →</a>
+                {% endif %}
+            </div>
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
+                <div class="p-3.5 rounded-xl border transition-all duration-200 hover:border-violet-200" style="background: #FAFAFE; border-color: #E2E8F0;">
+                    <div class="figure font-bold" style="color: var(--brand-600); font-size: 24px;">{{ kpis.messages_in }}</div>
+                    <div class="figure-label mt-1 font-medium text-xs text-slate-500">Messages in</div>
+                </div>
+                <div class="p-3.5 rounded-xl border transition-all duration-200 hover:border-violet-200" style="background: #FAFAFE; border-color: #E2E8F0;">
+                    <div class="figure font-bold" style="color: var(--brand-600); font-size: 24px;">{{ kpis.messages_out }}</div>
+                    <div class="figure-label mt-1 font-medium text-xs text-slate-500">Messages out</div>
+                </div>
+                <div class="p-3.5 rounded-xl border transition-all duration-200 hover:border-violet-200" style="background: #FAFAFE; border-color: #E2E8F0;">
+                    <div class="figure font-bold" style="color: var(--brand-600); font-size: 24px;">{{ kpis.contacts_new }}</div>
+                    <div class="figure-label mt-1 font-medium text-xs text-slate-500">New contacts</div>
+                </div>
+                <div class="p-3.5 rounded-xl border transition-all duration-200 hover:border-violet-200" style="background: #FAFAFE; border-color: #E2E8F0;">
+                    <div class="figure font-bold" style="color: var(--brand-600); font-size: 24px;">{{ kpis.active_flows }}</div>
+                    <div class="figure-label mt-1 font-medium text-xs text-slate-500">Live flows</div>
+                </div>
+            </div>
+            {% comment %}
+              Bar heights are computed in the view — the template language has
+              no arithmetic, and widthratio's rounding is not worth explaining.
+              A zero week renders flat bars rather than nothing, because "quiet"
+              and "broken" should not look the same.
+            {% endcomment %}
+            <div class="flex items-end gap-2.5 h-[110px] mt-6 px-1" role="img"
+                 aria-label="Messages received per day over the last seven days">
+                {% for day in kpis.daily_messages %}
+                <div class="flex-1 rounded-t-lg transition-all duration-200 hover:opacity-85" style="height: {{ day.height }}%; min-height: 4px; background: linear-gradient(180deg, var(--brand-400) 0%, var(--brand-600) 100%);"
+                     title="{{ day.date|date:'D j M' }}: {{ day.messages_in }}"></div>
+                {% endfor %}
+            </div>
+            <div class="flex justify-between mt-2.5 text-[11px] font-medium" style="color: var(--text-ghost);">
+                {% for day in kpis.daily_messages %}<span>{{ day.date|date:"D" }}</span>{% endfor %}
+            </div>
+        </section>
+        {% endif %}
+
+        <section class="card p-6">
+            <h2 class="section-title mb-4">Needs you</h2>
+            {% for item in needs_you %}
+            <a class="flex gap-3 py-3.5 no-underline {% if not forloop.last %}border-b{% endif %}"
+               style="border-color: var(--divider);" href="{{ item.url }}">
+                <span class="w-8 h-8 rounded-[10px] flex items-center justify-center flex-shrink-0"
+                      style="background: {% if item.tone == 'bad' %}var(--error-50); color: var(--error-700){% elif item.tone == 'warn' %}var(--warning-50); color: var(--warning-700){% else %}var(--surface-page); color: var(--text-secondary){% endif %};">
+                    {% include "partials/_nav_icon.html" with name="bell" icon_size=15 %}
+                </span>
+                <span class="min-w-0">
+                    <span class="block text-sm font-semibold" style="color: var(--text-primary);">{{ item.title }}</span>
+                    <span class="block text-[13px] mt-0.5" style="color: var(--text-tertiary);">{{ item.body }}</span>
+                </span>
+            </a>
+            {% empty %}
+            <p class="text-[13px]" style="color: var(--text-tertiary);">Nothing is waiting on you.</p>
+            {% endfor %}
+        </section>
+    </div>
+</div>
+{% endblock %}

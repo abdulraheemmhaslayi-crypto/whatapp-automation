@@ -1,0 +1,86 @@
+{% load common_extras %}
+{% comment %}
+Step 2 — the audience (SPEC §13.1).
+
+The rule builder is templates/contacts/_filter_bar.html, included unchanged, and
+its Alpine component is the CRM's (defined once in compose.html's
+alpine_components block, so it exists before Alpine initialises anything this
+partial swaps in). That is the point of contract 8: a broadcast audience and a
+saved segment are the same document evaluated by the same engine, so a second
+builder here would be a second list of sources and operators that could disagree
+with the one the segment page uses.
+
+`can_manage_crm` is deliberately absent from this context, which is what keeps
+the filter bar's save/update/delete-segment controls out of the composer —
+managing segments is the CRM's job, not a side effect of drafting a broadcast.
+
+Two forms, one Alpine scope, because forms cannot nest and these do different
+things: the top one GETs a preview on every edit, the bottom one POSTs the
+document that gets stored. Both read the same `serialised`, so the count an
+operator agrees to is computed from the rules they are looking at.
+{% endcomment %}
+<div x-data="{ segment: '{{ filter_config.segmentId|escapejs }}' }">
+<div x-data="contactFilters({{ filter_config|json_attr }})">
+
+  <form hx-get="{% url 'broadcasts:audience_preview' workspace_id=request.workspace.id broadcast_id=broadcast.id %}"
+        hx-target="#broadcast-audience-preview"
+        hx-swap="innerHTML"
+        hx-trigger="submit, change delay:400ms, input changed delay:600ms"
+        @submit.prevent>
+    <h2 class="wizard-title">Who receives this?</h2>
+    <p class="wizard-lede">Pick a saved segment or build the rules. The count updates as you go, and nobody is messaged until the last step.</p>
+
+    {% comment %}
+      Option cards rather than a select (HANDOFF §3): the choice between a
+      saved audience and your own rules is the whole of this step, so it is
+      laid out rather than folded away. Real radios bound to `segment`, so the
+      preview form above and the save form below read the same value.
+    {% endcomment %}
+    <fieldset class="option-cards mb-4">
+      <legend class="sr-only">Audience</legend>
+      {% for option in filter_config.segments %}
+      <label class="option-card">
+        <input type="radio" name="segment" value="{{ option.value }}" x-model="segment">
+        <span class="option-card-body">
+          <span class="option-card-title">{{ option.label }}</span>
+          <span class="option-card-text">Saved segment, copied as it is now</span>
+        </span>
+        <span class="option-card-radio" aria-hidden="true"></span>
+      </label>
+      {% endfor %}
+      <label class="option-card">
+        <input type="radio" name="segment" value="" x-model="segment">
+        <span class="option-card-body">
+          <span class="option-card-title">Build the rules</span>
+          <span class="option-card-text">Tags, fields, channels — anything the contact list can filter on</span>
+        </span>
+        <span class="option-card-radio" aria-hidden="true"></span>
+      </label>
+    </fieldset>
+
+    <div x-show="!segment">
+      {% include "contacts/_filter_bar.html" %}
+    </div>
+  </form>
+
+  <div id="broadcast-audience-preview"
+       hx-get="{% url 'broadcasts:audience_preview' workspace_id=request.workspace.id broadcast_id=broadcast.id %}"
+       hx-trigger="load"
+       hx-swap="innerHTML">
+    {% include "broadcasts/_audience_preview.html" %}
+  </div>
+
+  <p class="wizard-hint mt-3">Opted-out contacts, and anyone the channel will not let you message, are left out automatically.</p>
+
+  <form class="wizard-actions" data-wizard-save
+        hx-post="{% url 'broadcasts:save_audience' workspace_id=request.workspace.id broadcast_id=broadcast.id %}"
+        hx-target="#broadcast-wizard"
+        hx-swap="innerHTML">
+    {% csrf_token %}
+    <input type="hidden" name="filter" :value="serialised">
+    <input type="hidden" name="segment" :value="segment">
+    {% include "broadcasts/_step_back.html" %}
+    <button type="submit" class="btn-pill-primary">Continue</button>
+  </form>
+</div>
+</div>

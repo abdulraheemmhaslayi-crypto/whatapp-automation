@@ -1,0 +1,151 @@
+﻿{% extends "base.html" %}
+{% load flow_builder %}
+{% comment %}
+The builder's host page (SPEC §16): a mount div, and the React island that
+replaces its contents.
+
+Everything the island needs is a data attribute, so it reverses no URLs of its
+own. The API URLs carry the workspace segment: SPEC §16 writes them without one,
+and apps/flows/api.py records why they have one here.
+
+The bundle is reached through {% templatetag openblock %} flow_builder_bundle
+{% templatetag closeblock %} rather than {% templatetag openblock %} static
+{% templatetag closeblock %}, so a tree that has not run `make frontend` renders
+the notice below instead of a 500 or a red test — see
+apps/flows/templatetags/flow_builder.py.
+{% endcomment %}
+
+{% block title %}{{ flow.name }} · Flows · Quikro{% endblock %}
+
+{% block extra_head %}
+{% flow_builder_bundle as builder %}
+{% if builder %}
+{% comment %}
+In the head, not beside the script: a stylesheet discovered in the body is a
+guaranteed flash of an unstyled canvas.
+{% endcomment %}
+<link rel="stylesheet" href="{{ builder.css }}">
+{% endif %}
+{% endblock %}
+
+{% comment %}
+  No page header: the builder's own 56px top bar is the header (HANDOFF §3,
+  Flow builder) — back link, the name edited in place, status, save state,
+  undo/redo, Test, problems, Publish, and the downloads behind "…". It lives
+  in the island because every one of those answers changes while the page is
+  open, and a header Django rendered once could only go stale.
+
+  The page goes full-bleed through base.html's main_pad seam: the canvas is
+  the page, and a padded card around it only took space from it.
+{% endcomment %}
+{% block main_pad %}p-0{% endblock %}
+
+{% block content %}
+{% flow_builder_bundle as builder %}
+{% comment %}
+The Triggers drawer overlays the canvas rather than sitting beside it, so the
+mount div's box never changes size and React Flow is never asked to reflow.
+The body is fetched by htmx on first open and re-fetched on `triggersChanged`.
+{% endcomment %}
+{% comment %}
+Dispatching `triggers-opened` on the way open is what makes the panel's first
+fetch lazy: most visits to the builder never touch the drawer, and `load once`
+made every one of them pay for the panel query plus a channel query per ref
+trigger.
+{% endcomment %}
+<div class="flex-1 min-h-0 relative"
+     x-data="{ triggersOpen: false }"
+     @toggle-triggers.window="triggersOpen = !triggersOpen; if (triggersOpen) $dispatch('triggers-opened')"
+     @keydown.escape.window="triggersOpen = false">
+{% comment %}
+x-ignore keeps Alpine out of the React island entirely. Alpine 3 observes the
+whole document and initializes any added element carrying x-* directives, and
+the CSP grants 'unsafe-eval' for Alpine's own evaluator — so without this, any
+markup React writes into the DOM is markup Alpine would happily execute. React
+owns everything below this node and needs none of Alpine's behaviour, so the
+two are kept apart rather than trusting every future component not to render
+attacker-authored HTML.
+{% endcomment %}
+<div id="flow-builder"
+     x-ignore
+     class="fb-mount h-full overflow-hidden"
+     style="background: var(--surface-1); height: 100%;"
+     data-flow-id="{{ flow.id }}"
+     data-flow-name="{{ flow.name }}"
+     data-list-url="{{ list_url }}"
+     data-rename-url="{{ api_rename_url }}"
+     data-trigger-enabled-url="{{ api_trigger_enabled_url }}"
+     {% if can_edit %}data-export-url="{{ export_url }}"
+     data-export-bundle-url="{{ export_bundle_url }}"{% endif %}
+     data-can-edit="{{ can_edit|yesno:"true,false" }}"
+     data-detail-url="{{ api_detail_url }}"
+     data-publish-url="{{ api_publish_url }}"
+     data-offline-url="{{ api_offline_url }}"
+     data-stats-url="{{ api_stats_url }}"
+     data-schema-url="{{ api_schema_url }}"
+     data-media-picker-url="{{ media_picker_url }}"
+     data-preview-url="{{ preview_url }}">
+    {% if builder %}
+    {% comment %}
+    Replaced by createRoot().render() on mount. Kept until then so a slow parse
+    is not a blank rectangle.
+    {% endcomment %}
+    <div class="h-full flex flex-col items-center justify-center gap-2 p-8">
+        <p class="text-sm" style="color: var(--text-secondary);">Loading the flow builder…</p>
+        {% if not can_edit %}<p class="text-xs" style="color: var(--text-tertiary);">Read-only: you can look at this flow but not change it.</p>{% endif %}
+    </div>
+    {% else %}
+    <div class="h-full flex items-center justify-center p-8">
+        <div class="alert-error max-w-lg text-left">
+            <p class="font-medium">The flow builder could not load.</p>
+            <p class="mt-1">
+                Its JavaScript bundle has not been built. Run <code>make frontend</code> and reload,
+                or rebuild the container image.
+            </p>
+            {% if not can_edit %}<p class="mt-2">Read-only: you can look at this flow but not change it.</p>{% endif %}
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<aside x-show="triggersOpen" x-cloak aria-label="Triggers"
+       class="bb-drawer anim-collapse absolute inset-y-0 right-0 w-96 max-w-full z-30 overflow-y-auto">
+    <div id="flow-triggers"
+         hx-get="{% url 'flows:trigger_panel' workspace_id=request.workspace.id flow_id=flow.id %}"
+         hx-trigger="triggers-opened from:body once, triggersChanged from:body"
+         hx-swap="outerHTML">
+        <p class="p-4 text-sm" style="color: var(--text-secondary);">Loading triggers…</p>
+    </div>
+</aside>
+</div>
+{% endblock %}
+
+{% comment %}
+The §11.4 filter builder's Alpine factory, for the rule trigger's panel in the
+drawer (issue #22). It has to be defined by the *page*: base.html renders this
+block before Alpine's own deferred script tag, which is the window in which a
+global x-data factory can be declared — and the panel arrives later, as an htmx
+fragment, which is too late to define one for itself.
+{% endcomment %}
+{% block alpine_components %}
+{% include "contacts/_filter_bar_script.html" %}
+{% endblock %}
+
+{% block extra_js %}
+{% flow_builder_bundle as builder %}
+{% if builder %}
+{% comment %}
+type="module" defers, so this runs after #flow-builder exists and the ordering
+base.html documents for htmx and Alpine is untouched — the island needs neither.
+
+The nonce is not strictly required (script-src carries 'self' and the shell's
+own vendor tags carry none), but it costs nothing and is what keeps this tag
+working if 'strict-dynamic' is ever added.
+
+There is deliberately no onerror= hook: inline handlers are banned by CSP and by
+apps/common/tests/test_shell.py, so the missing-bundle case is decided
+server-side above.
+{% endcomment %}
+<script type="module" src="{{ builder.js }}" nonce="{{ request.csp_nonce }}"></script>
+{% endif %}
+{% endblock %}

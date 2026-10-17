@@ -1,0 +1,90 @@
+{% comment %}
+The Triggers drawer's body (issue #11, SPEC §10).
+
+Rendered inside edit.html on first open and re-fetched whole on every
+`triggersChanged` event, so there is exactly one renderer for the list — a
+filtered view and a post-mutation refresh can never disagree about what a row
+looks like. Same pattern as contacts/_tag_rows.html and flows/_list_rows.html.
+
+Everything platform-supplied here (a keyword, a ref, a connection's display
+name) is attacker-adjacent user text and is rendered escaped. No mark_safe, no
+`|safe`.
+{% endcomment %}
+{% comment %}
+hx-include carries #trigger-focus, the hidden input in edit.html that holds the
+id of the trigger the canvas asked to open. It lives outside this region on
+purpose: this element is replaced wholesale by every refetch, and an input
+inside it would be swapped away mid-request.
+{% endcomment %}
+<div id="flow-triggers"
+     hx-get="{% url 'flows:trigger_panel' workspace_id=request.workspace.id flow_id=flow.id %}"
+     hx-trigger="triggersChanged from:body"
+     hx-include="#trigger-focus"
+     hx-swap="outerHTML"
+     class="p-4">
+
+    <div class="flex items-center justify-between gap-2 mb-1">
+        <h2 class="text-sm font-semibold" style="color: var(--text-primary);">Triggers</h2>
+        <button type="button" class="btn-link text-xs"
+                @click="triggersOpen = false">Close</button>
+    </div>
+    <p class="text-xs mb-4" style="color: var(--text-tertiary);">
+        What starts this flow. Lower numbers run first and the first match wins,
+        across every flow in this workspace, not just this one.
+    </p>
+
+    {% for label in duplicate_stage_labels %}
+    <div class="alert-error text-xs mb-3">
+        More than one “{{ label }}” trigger is enabled on this flow. Only the one with the
+        lowest number will ever run.
+    </div>
+    {% endfor %}
+
+    {% if not triggers %}
+    <div class="mb-4">
+    {% include "components/empty_state.html" with icon="flows" title="No triggers yet" body="A published flow with no trigger never runs. Add one below." %}
+    </div>
+    {% else %}
+    <div class="card overflow-hidden mb-4">
+        {% for row in triggers %}
+        {% include "flows/_trigger_row.html" %}
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if can_edit %}
+    {% comment %}
+      Option cards rather than a <select> and an Add button (HANDOFF §4,
+      "Trigger drawer and forms"): what each kind of trigger *does* is the
+      thing you are choosing on, and a select can only show its name. Each card
+      is a button that opens that type's form below — nothing is created until
+      the form is saved. A type that cannot fire yet says so on its card, not
+      only once picked; see TriggerSpec.unavailable.
+    {% endcomment %}
+    <details class="mt-2" {% if not triggers %}open{% endif %}>
+        <summary class="btn-pill-secondary btn-pill-sm cursor-pointer list-none inline-flex">
+            {% include "partials/_nav_icon.html" with name="plus" icon_size=15 %} Add a trigger
+        </summary>
+        <div class="option-cards mt-3">
+            {% for spec in trigger_types %}
+            <button type="button" class="option-card"
+                    hx-get="{% url 'flows:trigger_form' workspace_id=request.workspace.id flow_id=flow.id %}?type={{ spec.type|urlencode }}"
+                    hx-target="#trigger-form"
+                    hx-swap="innerHTML">
+                <span class="option-card-body">
+                    <span class="option-card-title">{{ spec.label }}</span>
+                    <span class="option-card-text">{% if spec.unavailable %}Not available yet{% else %}{{ spec.description }}{% endif %}</span>
+                </span>
+            </button>
+            {% endfor %}
+        </div>
+    </details>
+    {% endif %}
+
+    {% comment %}
+    Pre-filled when the panel was opened on one trigger — clicking its card on
+    the canvas — and empty otherwise, which is the original behaviour and what
+    the buttons above swap into.
+    {% endcomment %}
+    <div id="trigger-form" class="mt-4">{% if spec %}{% include "flows/_trigger_form.html" %}{% endif %}</div>
+</div>

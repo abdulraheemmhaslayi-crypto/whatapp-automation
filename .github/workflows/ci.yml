@@ -1,0 +1,729 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Lets the full suite be exercised on a feature branch before a PR exists.
+  workflow_dispatch:
+
+# Principle of least privilege: default to read-only for every job.
+permissions:
+  contents: read
+
+# Cancel in-progress runs when a new commit is pushed to the same branch/PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: requirements/*.txt
+
+      - name: Install ruff
+        # Pinned to the same version as requirements/dev.txt so a lint failure
+        # here is reproducible with `make lint` locally.
+        run: pip install "ruff==0.16.4"
+
+      - name: ruff check
+        # The S (flake8-bandit) rules are enabled in pyproject.toml, so this
+        # step is also the security lint required by SECURITY-BASELINE §10.
+        run: ruff check .
+
+      - name: ruff format --check
+        run: ruff format --check .
+
+  typecheck:
+    name: Type check (mypy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: requirements/*.txt
+
+      - name: Install dependencies
+        # uv rather than pip: it resolves and installs the tree in a fraction
+        # of the time, and its own cache replaces setup-python's pip cache,
+        # which only ever cached the downloads and still paid to reinstall
+        # every wheel.
+        run: uv pip install --system -r requirements/dev.txt
+
+      - name: mypy
+        # django-stubs loads config.settings.test, which supplies its own
+        # SECRET_KEY / ENCRYPTION_KEY_SALT defaults — no secrets needed here.
+        run: mypy apps/ config/ tests/ --ignore-missing-imports
+
+      - name: Set up Node
+        # Version from .nvmrc; the rationale is on the test job's copy below.
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: ".nvmrc"
+          cache: "npm"
+
+      - name: Install JavaScript dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: tsc (flow builder island)
+        # In the job named "Type check", beside mypy, because that is where a
+        # reader looks for a type gate. Vitest strips types with esbuild and
+        # would never fail on one, so this is the only thing checking them.
+        run: npm run typecheck:js
+
+  test:
+    name: Test (pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        # Pulled via AWS's public mirror of Docker Hub official images to avoid
+        # anonymous Docker Hub pulls, whose rate limits break CI intermittently
+        # (the same workaround BrightBean Studio's CI carries).
+        image: public.ecr.aws/docker/library/postgres:16-alpine
+        env:
+          POSTGRES_DB: brightbean_chat
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          # Test databases are disposable, so initdb need not fsync.
+          POSTGRES_INITDB_ARGS: "--no-sync"
+        ports:
+          - 5432:5432
+        # The 10s health interval meant the runner waited ~29s for a database
+        # that was ready far sooner; 2s cuts that to about a third. The retry
+        # count rises to keep the failure ceiling at 60s — the interval is what
+        # wins the latency, and 20 retries would have quietly cut the budget
+        # below the 50s (5 x 10s) this had before. The tmpfs
+        # data directory takes the four parallel test-database creations and
+        # the transaction=True truncations off disk entirely — durability is
+        # meaningless for a database thrown away at the end of the job.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+          --mount type=tmpfs,destination=/var/lib/postgresql/data
+    env:
+      DJANGO_SETTINGS_MODULE: config.settings.test
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/brightbean_chat
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: requirements/*.txt
+
+      - name: Install dependencies
+        # See the typecheck job for why this is uv rather than pip.
+        run: uv pip install --system -r requirements/dev.txt
+
+      - name: Set up Node
+        # .nvmrc is the single version CI runs on. It cannot be the only copy:
+        # the Dockerfile's and the compose watcher's image tags are literals so
+        # Dependabot can see them, and package.json's `engines` is a semver
+        # range npm enforces — none of the three can read a dotfile. The "Node
+        # pins agree" step in the audit job asserts all four match, so a bump
+        # that misses one fails rather than silently splitting the runtime.
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: ".nvmrc"
+          cache: "npm"
+
+      - name: Build the Tailwind bundle
+        # The suite asserts that every {% static %} reference in a template
+        # resolves through a finder — which is what stops a typo reaching the
+        # image build, where CompressedManifestStaticFilesStorage turns it into
+        # a hard failure. css/dist/styles.css is a build artefact, so without
+        # this step that assertion could only ever be made vacuous.
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build:css
+
+      - name: Vitest (flow builder island)
+        # Here rather than in the audit job: this one already has Node, an npm
+        # cache and an `npm ci`, so it costs one command. Before pytest so a
+        # broken island reports as a JavaScript failure instead of hiding behind
+        # the Python suite.
+        #
+        # Note this job deliberately does NOT build the bundle. The builder page
+        # reaches it through {% flow_builder_bundle %} rather than a
+        # {% static %} literal, so the static-reference assertion never looks at
+        # it, and apps/flows/tests/test_builder_assets.py drives both the built
+        # and the un-built branch hermetically. Building it here would make
+        # those tests depend on ambient build state.
+        run: npm run test:js
+
+      - name: Models and migrations agree
+        # apps/messaging/migrations/0003_deleted_status_and_comment_consent.py
+        # has claimed since Layer 4 that this runs in CI. It did not — issue
+        # #29's traceability pass found the claim and this is the step that
+        # makes it true. It lives in `test` rather than `lint` because
+        # makemigrations needs the app registry and a database URL, both of
+        # which only this job has.
+        #
+        # A missing migration was never *silent*: pytest builds the test
+        # database from migrations, so the suite failed with a missing-column
+        # error somewhere unrelated. This turns that into one clean diff.
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: pytest
+        # --dist loadfile comes from addopts in pyproject.toml (see the comment
+        # there for why the grouping is load*file*); -n is supplied here and in
+        # `make test` so that a bare single-file pytest stays single-process.
+        #
+        # COVERAGE_CORE=sysmon puts coverage on CPython 3.12's sys.monitoring
+        # instead of the trace callback. Measured on the full suite: coverage
+        # costs ~81% on the trace core and ~10% on sysmon, for identical
+        # output. Valid here because no branch coverage is configured.
+        env:
+          COVERAGE_CORE: sysmon
+        run: pytest -n auto --cov=apps --cov-report=term-missing
+
+  audit:
+    name: Dependency audit + frontend build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: requirements/*.txt
+
+      - name: Set up Node
+        # Version from .nvmrc; the rationale is on the test job's copy above.
+        # `cache: npm` matters here too — this job runs npm ci as well.
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: ".nvmrc"
+          cache: "npm"
+
+      - name: Install pip-audit
+        run: pip install "pip-audit==2.10.1"
+
+      - name: pip-audit (runtime + dev dependencies)
+        # Audits the LOCKS, so the transitive tree is covered too — auditing
+        # only the direct pins would miss a vulnerability in a dependency of a
+        # dependency, which is where most of them live.
+        #
+        # No waivers today. Any future one goes here as
+        # `--ignore-vuln GHSA-xxxx` with a comment naming the advisory, why it
+        # does not apply, and when it gets revisited (SECURITY-BASELINE §10).
+        run: pip-audit --strict --requirement requirements/base.txt --requirement requirements/dev.txt
+
+      - name: pip-audit gate self-test
+        # Proves the gate actually fails on a vulnerable pin rather than
+        # passing because the audit silently did nothing. Issue #2 asks for a
+        # deliberately vulnerable fixture; this is it, and it is never installed.
+        #
+        # Checks the exit code is *exactly* 1 (vulnerabilities found) and that
+        # the report names the package. Merely asserting "non-zero" would let
+        # this step go green when pip-audit crashed — unreachable advisory API,
+        # renamed fixture, resolution error — which is precisely the failure
+        # this self-test exists to rule out.
+        run: |
+          set +e
+          report="$(pip-audit --no-deps --requirement tests/fixtures/vulnerable-requirements.txt 2>&1)"
+          code=$?
+          set -e
+          echo "${report}"
+
+          if [ "${code}" -ne 1 ]; then
+            echo "::error::pip-audit exited ${code} on the deliberately vulnerable fixture; expected 1 (vulnerabilities found). Exit 0 means the audit gate is not working; anything else means pip-audit itself failed."
+            exit 1
+          fi
+          if ! grep -q "urllib3" <<< "${report}"; then
+            echo "::error::pip-audit exited 1 but the report does not name urllib3 — the fixture is not being read as expected."
+            exit 1
+          fi
+          echo "pip-audit correctly rejected the vulnerable fixture."
+
+      - name: Node pins agree
+        # The Node version is written in five places and no two of them can
+        # share a source: .nvmrc is a dotfile only setup-node reads, the
+        # Dockerfile and compose carry literal image tags (kept literal so
+        # Dependabot's docker ecosystem can see and bump them), engines is a
+        # semver range npm enforces, and CONTRIBUTING is prose. Dependabot bumps
+        # exactly one of those at a time, so without this step a PR moving the
+        # base image alone would go green while CI still tested the old major.
+        #
+        # Only the compose comment at docker-compose.override.yml:49 is left
+        # unchecked — it names the image in prose, not as a pin.
+        run: |
+          nvmrc="$(tr -d '[:space:]' < .nvmrc)"
+          dockerfile="$(sed -n 's/^FROM node:\([0-9][0-9]*\)-slim.*/\1/p' Dockerfile | head -1)"
+          compose="$(sed -n 's/^[[:space:]]*image:[[:space:]]*node:\([0-9][0-9]*\)-slim.*/\1/p' docker-compose.override.yml | head -1)"
+          engines="$(node -p "((require('./package.json').engines||{}).node||'').match(/[0-9]+/)?.[0] || ''")"
+          # The prose pin lives in .github/CONTRIBUTING.md's "Local development"
+          # section. It was in the README until issue #28 rebuilt that around
+          # deploying rather than developing and moved the setup detail here;
+          # this check followed the sentence rather than being weakened to
+          # accept its absence.
+          contributing="$(sed -n 's/.*Node \([0-9][0-9]*\)+ and.*/\1/p' .github/CONTRIBUTING.md | head -1)"
+
+          # An empty capture means the pattern stopped matching — a silently
+          # skipped comparison would be worse than no check at all.
+          for pair in "nvmrc:${nvmrc}" "Dockerfile:${dockerfile}" "compose:${compose}" "engines:${engines}" "CONTRIBUTING:${contributing}"; do
+            if [ -z "${pair##*:}" ]; then
+              echo "::error::Could not read the Node version out of ${pair%%:*} — this check's pattern needs updating."
+              exit 1
+            fi
+          done
+
+          echo ".nvmrc=${nvmrc} Dockerfile=${dockerfile} compose=${compose} engines=${engines} CONTRIBUTING=${contributing}"
+          if [ "${nvmrc}" != "${dockerfile}" ] || [ "${nvmrc}" != "${compose}" ] \
+             || [ "${nvmrc}" != "${engines}" ] || [ "${nvmrc}" != "${contributing}" ]; then
+            echo "::error::Node version pins disagree. All five must name the same major; .nvmrc is the one CI runs on."
+            exit 1
+          fi
+          echo "All five Node pins agree on ${nvmrc}."
+
+      - name: Install JavaScript dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: npm audit
+        run: npm audit --audit-level=low
+
+      - name: Tailwind build is deterministic
+        # "Deterministic in CI" is only a claim until something checks it. Two
+        # builds of the same input must be byte-identical, or a rebuild would
+        # churn the manifest hash on every deploy for no reason.
+        run: |
+          npm run build:css
+          cp apps/theme/static/css/dist/styles.css /tmp/styles.first.css
+          rm -rf apps/theme/static/css/dist
+          npm run build:css
+          cmp /tmp/styles.first.css apps/theme/static/css/dist/styles.css
+          test -s apps/theme/static/css/dist/styles.css
+          echo "Tailwind output is reproducible ($(wc -c < apps/theme/static/css/dist/styles.css) bytes)."
+
+      - name: Flow-builder bundle is deterministic
+        # The same contract as the Tailwind step above, for the same reason: a
+        # rebuild that changes bytes churns the collectstatic manifest hash on
+        # every deploy for nothing.
+        #
+        # `diff -r` rather than `cmp` because the build emits a directory — and
+        # because a stray Rollup chunk then shows up here as an unexpected file
+        # rather than passing quietly.
+        run: |
+          npm run build:js
+          cp -r apps/flows/static/flows/builder /tmp/builder.first
+          rm -rf apps/flows/static/flows/builder
+          npm run build:js
+          diff -r /tmp/builder.first apps/flows/static/flows/builder
+          echo "Builder bundle is reproducible ($(du -sh apps/flows/static/flows/builder | cut -f1))."
+
+      - name: The bundle is one file per type, with no source map
+        # inlineDynamicImports + cssCodeSplit:false, asserted rather than
+        # assumed. Django does not rewrite ES-module specifiers in the .js it
+        # collects (HashedFilesMixin.support_js_module_import_aggregation is
+        # False), so a second chunk would be fetched by its un-hashed name and
+        # lose cache-busting; and a sourceMappingURL comment would publish
+        # first-party source under /static/ in every image.
+        run: |
+          test -s apps/flows/static/flows/builder/builder.js
+          test -s apps/flows/static/flows/builder/builder.css
+          test "$(ls apps/flows/static/flows/builder/*.js  | wc -l)" -eq 1
+          test "$(ls apps/flows/static/flows/builder/*.css | wc -l)" -eq 1
+          ! grep -q "sourceMappingURL" apps/flows/static/flows/builder/builder.js
+
+      - name: Vendored JavaScript matches the lockfile
+        # static/js/vendor/ is committed so a clone without Node still runs, but
+        # a committed copy can drift from the version package-lock.json pins —
+        # by a hand edit, or by a Dependabot bump nobody re-vendored. Re-running
+        # the copy and diffing makes that impossible to merge.
+        run: |
+          npm run vendor
+          # `git status --porcelain`, not `git diff`: diff only reports tracked
+          # files, so adding an entry to ASSETS and forgetting to commit the
+          # file it produces would leave this step green while the asset 404s
+          # at runtime and fails the image build under manifest storage.
+          drift="$(git status --porcelain -- static/js/vendor)"
+          if [ -n "${drift}" ]; then
+            echo "${drift}"
+            git diff -- static/js/vendor || true
+            echo "::error::static/js/vendor is stale — run \`npm run vendor\` and commit the result."
+            exit 1
+          fi
+          echo "Vendored bundles match package-lock.json."
+
+  build:
+    name: Docker build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Deliberately ungated. This job used to wait on [lint, typecheck, test] to
+    # avoid spending build minutes on already-broken code, but this repo is
+    # public, so GitHub-hosted runners are free and those minutes cost nothing.
+    # A failing lint/typecheck/test check still blocks the PR on its own, so the
+    # gate bought no safety — only latency. Starting at t=0 alongside `test`
+    # takes CI wall clock from ~4m10s to ~2m20s.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Build image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: false
+          load: true
+          tags: brightbean-chat:ci
+          cache-from: type=gha
+          # Only pushes to main write the layer cache. Every branch reads it, so
+          # PR builds keep the full speedup, but they no longer each export a
+          # mode=max cache of every intermediate layer. That export is the
+          # largest artefact this repo produces, and now that the job is ungated
+          # it would run on every push including failing ones — enough write
+          # churn to evict the uv and npm caches the other jobs depend on, since
+          # all of them share one 10GB per-repository quota with LRU eviction.
+          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,mode=max' || '' }}
+
+      - name: Container runs as a non-root user
+        # SECURITY-BASELINE / Layer-0 gate item 4. Studio's image runs as root;
+        # this asserts ours does not regress to that.
+        run: |
+          uid="$(docker run --rm brightbean-chat:ci id -u)"
+          echo "container uid: ${uid}"
+          test "${uid}" != "0"
+
+      - name: The flow-builder bundle was collected
+        # apps/flows/templatetags/flow_builder.py degrades instead of raising
+        # when the bundle is missing, which is right for a running app but
+        # removes the hard stop a missing {% static %} used to give the image
+        # build. This restores it here, without giving up the graceful
+        # degradation at runtime.
+        #
+        # staticfiles.json is ground truth: if it names the files, collectstatic
+        # saw them and the tag resolves them under manifest storage.
+        run: |
+          docker run --rm brightbean-chat:ci python -c "
+          import json, sys
+          paths = json.load(open('staticfiles/staticfiles.json'))['paths']
+          missing = [p for p in ('flows/builder/builder.js', 'flows/builder/builder.css') if p not in paths]
+          if missing:
+              sys.exit(f'not collected: {missing}; saw {sorted(k for k in paths if k.startswith(\"flows/\"))}')
+          print('flow-builder bundle collected:', [paths[p] for p in ('flows/builder/builder.js', 'flows/builder/builder.css')])
+          "
+
+      - name: docker compose up serves the app shell
+        # A clean checkout with no .env boots Postgres, migrates, and serves
+        # both the app shell and a /healthz backed by a real database
+        # round-trip. IMAGE_TAG points compose at the image built above so it
+        # does not rebuild the same layers.
+        #
+        # `-f docker-compose.yml` suppresses the automatic docker-compose.override.yml,
+        # which is a local-development file. Without it this step was not testing
+        # the image it had just built: the override bind-mounts `.:/app` over the
+        # image's contents and replaces the gunicorn CMD with `runserver`, so CI
+        # was exercising the dev server against the working tree. It also starts a
+        # `tailwind` container that runs a full `npm ci` the smoke test never needs.
+        env:
+          IMAGE_TAG: ci
+        run: |
+          test ! -f .env  # prove nothing was configured first
+          docker compose -f docker-compose.yml up -d
+
+          scripts/wait-for-http.sh http://localhost:8000/healthz 2xx 120 /tmp/healthz.json
+
+          echo "--- /healthz ---"
+          cat /tmp/healthz.json
+          grep -q '"status": "ok"' /tmp/healthz.json
+          grep -q '"database": "ok"' /tmp/healthz.json
+
+          # "/" is the authenticated router now (issue #31): anonymous
+          # visitors are redirected to the sign-in page, so -L follows it. This
+          # exercises allauth and the template chain rather than a static page.
+          # -f still fails the step on any non-2xx at the end of the redirect
+          # chain, which is what asserts / stays publicly reachable — the shell
+          # must not put the landing page behind a login.
+          echo "--- / ---"
+          curl -fsSL http://localhost:8000/ | grep -q "BrightBean Chat"
+
+      - name: /healthz fails when the database is down
+        env:
+          IMAGE_TAG: ci
+        run: |
+          docker compose -f docker-compose.yml stop postgres
+          scripts/wait-for-http.sh http://localhost:8000/healthz 503 30 /tmp/healthz-down.json
+          cat /tmp/healthz-down.json
+
+      - name: Tear down (development stack)
+        if: always()
+        env:
+          IMAGE_TAG: ci
+        run: |
+          docker compose -f docker-compose.yml logs --no-color --tail=100 || true
+          docker compose -f docker-compose.yml down -v || true
+
+      # -------------------------------------------------------------------
+      # The production stack (issue #28). Runs after the development one has
+      # been torn down, so the two cannot contend for a port, and under its own
+      # compose project name so `down -v` cannot reach the other's volumes.
+      # -------------------------------------------------------------------
+
+      - name: The production stack refuses to start without its secrets
+        # SECURITY-BASELINE §8 and the whole shape of docker-compose.prod.yml:
+        # nothing secret has a default. This asserts the failure is a refusal
+        # that names the variable, not a stack that comes up with a value
+        # nobody chose. It runs before anything is configured, so the runner's
+        # empty environment is the test fixture.
+        run: |
+          if docker compose -f docker-compose.prod.yml config >/dev/null 2>/tmp/prod-config.err; then
+            echo "::error::docker-compose.prod.yml configured itself with no secrets set"
+            exit 1
+          fi
+          cat /tmp/prod-config.err
+          grep -q "required variable" /tmp/prod-config.err
+          grep -q "deploy/env.prod.example" /tmp/prod-config.err
+          echo "The stack refused to start and said what was missing."
+
+      - name: docker compose -f docker-compose.prod.yml serves HTTPS
+        # APP_DOMAIN=localhost makes Caddy issue from its internal CA rather
+        # than calling Let's Encrypt, so this needs no DNS, no public address
+        # and no ACME round trip — the rest of the stack is identical to what a
+        # self-hoster runs. IMAGE_TAG points at the image built above.
+        env:
+          IMAGE_TAG: ci
+        run: |
+          # Filled in the way the guide tells a self-hoster to fill it in:
+          # start from the shipped template and replace the empty required
+          # values. Starting from the template rather than writing six lines is
+          # the point — it proves deploy/env.prod.example is usable as shipped.
+          # token_urlsafe emits only [A-Za-z0-9_-], so none of these values can
+          # contain the sed delimiter.
+          cp deploy/env.prod.example .env
+          gen() { python3 -c "import secrets; print(secrets.token_urlsafe($1))"; }
+          fill() { sed -i "s|^$1=$|$1=$2|" .env; grep -q "^$1=." .env; }
+
+          fill APP_DOMAIN localhost
+          fill ACME_EMAIL ci@example.com
+          fill SECRET_KEY "$(gen 50)"
+          fill ENCRYPTION_KEY_SALT "$(gen 50)"
+          fill POSTGRES_PASSWORD "$(gen 24)"
+          # Commented out in the template, because the stack runs a real worker.
+          echo "TICK_TOKEN=$(gen 32)" >> .env
+
+          docker compose -p bbchat-prod -f docker-compose.prod.yml up -d --wait --wait-timeout 240
+
+      - name: Only the proxy is published to the host
+        # The acceptance criterion — "postgres unreachable from outside the
+        # compose network" — asserted against the RUNNING stack rather than
+        # against the file, and widened to every service while we are here.
+        #
+        # Not `docker compose port`: that exits 0 and prints "invalid IP:0" when
+        # there is no mapping at all, so the obvious spelling of this check
+        # passes and fails in exactly the wrong directions. `ps --format json`
+        # reports what was actually published.
+        #
+        # Probing 127.0.0.1:5432 from outside would also be ambiguous here —
+        # GitHub's runner image ships its own PostgreSQL. scripts/smoke.sh
+        # --db-host is that check, for an operator running it against their own
+        # host.
+        run: |
+          docker compose -p bbchat-prod -f docker-compose.prod.yml ps --format json > /tmp/prod-ps.json
+          python3 - <<'EOF'
+          import json, sys
+
+          raw = open("/tmp/prod-ps.json").read().strip()
+          try:
+              containers = json.loads(raw)
+              if isinstance(containers, dict):
+                  containers = [containers]
+          except json.JSONDecodeError:
+              containers = [json.loads(line) for line in raw.splitlines() if line.strip()]
+
+          published = {
+              container["Service"]: [
+                  p for p in (container.get("Publishers") or []) if p.get("PublishedPort")
+              ]
+              for container in containers
+          }
+          for service, ports in sorted(published.items()):
+              print(f"{service}: {ports or 'not published'}")
+
+          leaked = sorted(s for s, ports in published.items() if ports and s != "caddy")
+          if leaked:
+              sys.exit(f"::error::these services published a host port: {leaked}")
+          if not published.get("caddy"):
+              sys.exit("::error::caddy published nothing, so the stack serves no traffic")
+          print("Only caddy is reachable from the host.")
+          EOF
+
+      - name: The worker drains the queue
+        # The two-process model, proved. The worker schedules and immediately
+        # runs the housekeeping bootstrap on start, so a functioning worker
+        # always logs a completed action — and a stack where only the web
+        # process works looks entirely healthy without one.
+        #
+        # The logs go to a file rather than into `grep -q`. `grep -q` exits on
+        # the first match and closes the pipe, so once the worker's log outgrows
+        # the 64 KB pipe buffer the producer dies of SIGPIPE — harmless under
+        # this step's default shell, which has no `pipefail`, and a spurious
+        # 60-second failure the moment anything turns it on.
+        run: |
+          for attempt in $(seq 1 30); do
+            docker compose -p bbchat-prod -f docker-compose.prod.yml logs worker --no-color \
+              > /tmp/worker.log 2>&1 || true
+            if grep -q "Queue action done" /tmp/worker.log; then
+              echo "The worker claimed and completed an action."
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose -p bbchat-prod -f docker-compose.prod.yml logs worker --no-color --tail=50
+          echo "::error::the worker never completed a queued action"
+          exit 1
+
+      - name: Smoke the production stack
+        # scripts/smoke.sh is the same script docs/self-hosting.md tells a
+        # self-hoster to run. --insecure because the certificate comes from
+        # Caddy's internal CA; everything it checks is otherwise exactly what a
+        # real deployment is checked for.
+        run: |
+          scripts/smoke.sh https://localhost \
+            --insecure \
+            --tick-token "$(grep '^TICK_TOKEN=' .env | cut -d= -f2-)" \
+            --project bbchat-prod
+
+      - name: Tear down (production stack)
+        if: always()
+        env:
+          IMAGE_TAG: ci
+        run: |
+          docker compose -p bbchat-prod -f docker-compose.prod.yml logs --no-color --tail=100 || true
+          docker compose -p bbchat-prod -f docker-compose.prod.yml down -v || true
+          rm -f .env
+
+  secrets-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # We invoke the gitleaks binary directly rather than using
+    # gitleaks/gitleaks-action, because that action now requires a paid
+    # license for GitHub organizations. The binary itself remains free
+    # and open source under the MIT license.
+    env:
+      # 8.30.x is the first line verified against this repo's
+      # .gitleaks.toml, which uses the top-level [[allowlists]] block
+      # with targetRules.
+      GITLEAKS_VERSION: "8.30.1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install gitleaks
+        run: |
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /tmp gitleaks
+          sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      # Always given an explicit range: the pull request's own commits on a PR,
+      # and the pushed ref's full ancestry otherwise.
+      #
+      # `gitleaks detect` with no `--log-opts` walks **every ref**, not the
+      # checked-out one — its default git-log invocation includes `--all` — and
+      # `fetch-depth: 0` fetches every branch. So a scan here was reporting
+      # findings from *other people's unmerged branches*. With six Layer-5
+      # workstreams in flight that is not a rare collision: each branch carrying
+      # a credential-shaped test fixture failed this job on every open PR,
+      # including ones pushed before it existed, and no per-branch fix could
+      # clear it. A red check nobody's PR can turn green is a check people learn
+      # to ignore.
+      #
+      # `HEAD` rather than no range at all on the push and dispatch paths, and
+      # that distinction is the whole point: "the full history" and "every ref"
+      # are not the same thing, and only the first one is wanted. Nothing is
+      # weakened where this decides something — a push to main still scans
+      # main's complete ancestry, so a credential-shaped fixture still needs its
+      # `.gitleaks.toml` allowlist entry before it lands, and a secret committed
+      # and later deleted is still caught.
+      #
+      # The empty-range guard is the other half, and it is the one that keeps
+      # this from being a downgrade. A range selecting no commits makes gitleaks
+      # scan nothing and exit 0 — a security gate switching itself off silently,
+      # which is a worse failure than the cross-branch noise above. So the count
+      # is checked and an empty range fails the job loudly; `set -euo pipefail`
+      # does the same for a ref that does not resolve at all.
+      - name: Run gitleaks
+        # Scoped to the ref under test. Without a range `gitleaks detect` walks
+        # every commit in the clone, and `fetch-depth: 0` above brings down every
+        # remote branch — so one branch carrying an un-allowlisted fixture failed
+        # the secret scan on every *other* open PR. Two Layer-5 branches hit this
+        # independently, which is how it reached main from both directions.
+        #
+        # Neither range gives up what .gitleaks.toml's header depends on when it
+        # explains why allowlists are path-based rather than inline
+        # `# gitleaks:allow` markers: a secret is still caught at every commit
+        # that carries it, within the work actually under test.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "${BASE_SHA}" ]; then
+            RANGE="${BASE_SHA}..${HEAD_SHA}"
+            echo "Scanning ${RANGE} (this pull request's own commits)"
+          else
+            RANGE="HEAD"
+            echo "Scanning HEAD (this ref's full ancestry, and no other branch)"
+          fi
+
+          COUNT="$(git rev-list --count "${RANGE}")"
+          if [ "${COUNT}" -eq 0 ]; then
+            echo "::error::gitleaks range '${RANGE}' selected no commits; refusing to report a clean scan."
+            exit 1
+          fi
+          echo "${COUNT} commit(s) in range."
+
+          gitleaks detect --source . --redact --verbose --no-banner --log-opts="${RANGE}"

@@ -1,0 +1,345 @@
+﻿{% comment %}
+The sidebar — the product's whole chrome. There is no top header: the
+workspace switcher, the primary navigation, notifications and the account menu
+all live here.
+
+240px on a desktop, collapsing to 60px, and an off-canvas drawer below `lg`.
+
+**The three legs of the anti-flash contract.** The collapse is persisted, so a
+page can start in either of two widths and the wrong one flashes before Alpine
+boots. Three pieces stop that, and they only work together: a pre-paint script
+in base.html's head stamping `sidebar-is-collapsed` on <html> (leg 1), the
+`.sidebar-initial` width mirror (leg 2, in base.html's head for the width and
+in styles.css for everything else), and the `x-init` below, which strips both
+markers the moment Alpine takes over (leg 3). Remove one and you get either a
+flash on every load or a sidebar frozen at its pre-paint width forever —
+`.sidebar-initial`'s width is unlayered and beats the `lg:w-*` utility Alpine
+binds. TestTheSidebar fails the page if any leg goes missing.
+
+**One copy of the nav, still.** The drawer does not break the invariant the old
+bottom tab bar existed to protect: it is this same <aside>, repositioned by a
+media query and slid in with a transform. A *second* nav would mean a second
+`nav-badge-inbox`, and an out-of-band swap only ever finds the first —
+apps/notifications/tests/test_shell.py forbids it.
+
+**`settings_groups`.** A settings page draws its nav HERE, in place of the
+product's, rather than in a second column beside it — the two-column shell put
+232px of settings rows next to 240px of app rows the reader had just left. The
+argument comes from the layout (see layouts/settings.html), because "this is a
+settings page" is exactly what a layout knows and nothing else does. One
+<aside>, one renderer, one set of collapse rules; what changes is the rows in
+it and the block above them.
+
+ONE argument, and the rows themselves are it. A `settings_mode` flag beside it
+read better and had a silent failure: a layout passing the flag but naming the
+rows wrong — `settings_nav_groups`, which is what the context key is actually
+called — drew a sidebar with a back button, no rows and no error. Django
+resolves an unknown variable to the empty string, so nothing could raise. With
+the rows as the switch, the two cannot disagree: no rows, no settings mode.
+
+**The bell is on both sets of rows, and that is what keeps its badge honest.**
+Studio's settings layouts override a `sidebar_nav` block while base.html goes
+on rendering the poll outside it, so the 60s out-of-band swap aims at a badge
+id the page no longer has — what partials/_nav_badge_sinks.html existed to
+paper over. Two things stop that here. The poll is a child of the row
+(notifications/partials/_bell.html), so it can never outlive its own target;
+and the row is pinned to the foot of the settings nav as well, from the same
+`notifications_row` the product's nav draws, so every page in the product has
+it exactly once. It is the only unread indicator there is — a settings page
+without it is a page where an arriving channel_needs_reauth alert is invisible
+until you leave, and Plan & billing and the Library are both surfaces people
+sit on.
+
+ONE row, never two: `notifications_row` IS the row out of `nav_groups`, and the
+two branches below are exclusive. A second copy would put two elements on
+`nav-badge-notifications` and send every swap to whichever came first.
+
+`wsOpen` is local again. It sat on the shell wrapper while two controls opened
+one panel — the header's workspace button and the rail's logo mark — and with
+the header gone there is one trigger, inside the panel's own wrapper, so the
+`data-ws-toggle` guard the two-trigger arrangement needed is gone with it.
+{% endcomment %}
+<aside class="sidebar sidebar-initial flex flex-col flex-shrink-0
+              fixed inset-y-0 left-0 z-40 w-60
+              transition-transform duration-200
+              lg:relative lg:z-auto lg:translate-x-0"
+       :class="[
+           sidebarCollapsed ? 'lg:w-[60px] sidebar-collapsed' : 'lg:w-60',
+           mobileMenuOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
+       ]"
+       x-init="$el.classList.remove('sidebar-initial');
+               document.documentElement.classList.remove('sidebar-is-collapsed');
+               $nextTick(() => $el.classList.add('transition-all', 'duration-200'))"
+       {% comment %}
+         One delegated handler rather than a @click on every link: below `lg`
+         the drawer covers the page it navigated to, so tapping any row has to
+         close it. Above `lg` the drawer is not a drawer and this does nothing.
+       {% endcomment %}
+       @click="if (window.innerWidth < 1024 && $event.target.closest('a')) { mobileMenuOpen = false }">
+
+    {% if settings_groups %}
+    {% comment %}
+      The way out, in the slot the workspace switcher holds everywhere else —
+      same height, same divider, so the rows below start where they always do.
+      Switching workspace from inside settings is not a thing to offer: half
+      these rows are scoped to the workspace you are standing in, and the panel
+      would silently retarget them.
+
+      `.sidebar-ws-btn` rather than a nav row, for the collapse rules: at 60px
+      it centres itself and `.sidebar-ws-name` goes, leaving the arrow.
+    {% endcomment %}
+    <div class="sidebar-ws">
+        {% comment %}
+          Named for the workspace, not just for "app". Half these rows are
+          scoped to the workspace you are standing in, and with the switcher
+          gone this row is the only thing left on the screen that says which
+          one — a reader with "Acme" and "Acme Staging" was otherwise editing
+          tags with nothing to tell the two apart. `default` covers the user
+          whose workspaces are all archived, whom app_home_url sends to the
+          org's workspace list instead.
+
+          `|default:'/'` on the url for the same reason the account menu's row
+          below carries one: sidebar_context returns {} for a request with no
+          session, and a bare {{ }} would render href="" — a link that reloads
+          the page it is on.
+        {% endcomment %}
+        <a href="{{ app_home_url|default:'/' }}" class="sidebar-ws-btn sidebar-back"
+           title="Back to {{ current_workspace.name|default:'app' }}">
+            <span class="sidebar-back-mark" aria-hidden="true">
+                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                     stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+            </span>
+            <span class="sidebar-ws-name">Back to {{ current_workspace.name|default:"app" }}</span>
+        </a>
+    </div>
+    {% else %}
+    <div class="sidebar-ws relative" x-data="{ wsOpen: false }" @click.away="wsOpen = false"
+         @keydown.escape.window="wsOpen = false">
+        {% if sidebar_workspaces %}
+        <button type="button" class="sidebar-ws-btn"
+                @click="wsOpen = !wsOpen"
+                title="Switch workspace (currently {{ current_workspace.name|default:'Quikro' }})"
+                aria-haspopup="true" :aria-expanded="wsOpen ? 'true' : 'false'">
+            {% include "partials/_logo.html" with workspace=current_workspace only %}
+            <span class="sidebar-ws-name">{{ current_workspace.name|default:"Quikro" }}</span>
+            <svg class="sidebar-ws-chevron" :class="wsOpen && 'open'" width="16" height="16" fill="none"
+                 stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round"
+                 stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+
+        {% comment %}
+          `left-2 right-2` is studio's, and inside a 60px collapsed sidebar it
+          would leave a 44px panel with a workspace name in it. The min-width
+          floor keeps the switcher usable at every width rather than hiding it
+          when collapsed — switching workspace is exactly what someone clicks
+          that mark for.
+        {% endcomment %}
+        <div x-show="wsOpen" x-cloak
+             class="sidebar-menu sidebar-menu-ws anim-collapse absolute left-2 right-2 top-full mt-1 z-50 min-w-[220px]">
+            {% for ws in sidebar_workspaces %}
+            <a href="{{ ws.url }}" class="sidebar-menu-item{% if ws.is_current %} is-current{% endif %}">
+                {% include "partials/_logo.html" with workspace=ws size="sm" only %}
+                <span class="sidebar-menu-name">{{ ws.name }}</span>
+                {% if ws.is_current %}
+                <svg class="sidebar-menu-check" width="16" height="16" fill="none" stroke="currentColor"
+                     viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                     aria-hidden="true"><path d="M5 13l4 4L19 7"/></svg>
+                {% endif %}
+            </a>
+            {% endfor %}
+            {% if can_create_workspace %}
+            <div class="sidebar-menu-divider">
+                <a href="{{ create_workspace_url }}" class="sidebar-menu-item">
+                    <span class="sidebar-menu-mark sidebar-menu-mark-new" aria-hidden="true">
+                        <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                             stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+                    </span>
+                    <span class="sidebar-menu-name">New workspace</span>
+                </a>
+            </div>
+            {% endif %}
+            {% comment %}
+              Studio ends the switcher with a link into the workspace you are
+              in, and the panel is where people look for it: the account menu's
+              Settings row lands on the *account* page, and with no Settings
+              row left in the nav this is the one direct way into the
+              workspace's own settings — and so into the Library. The url is
+              absent for a member without manage_workspace_settings — a row
+              advertising a page somebody is refused at is worse than no row,
+              the same rule NavItem.visible_to follows.
+            {% endcomment %}
+            {% if workspace_settings_url %}
+            <div class="sidebar-menu-divider">
+                <a href="{{ workspace_settings_url }}" class="sidebar-menu-item">
+                    <span class="sidebar-menu-mark" aria-hidden="true">
+                        {% include "partials/_nav_icon.html" with name="settings" icon_size=16 only %}
+                    </span>
+                    <span class="sidebar-menu-name">Workspace settings</span>
+                </a>
+            </div>
+            {% endif %}
+        </div>
+        {% else %}
+        {% comment %}
+          No workspaces to list — an anonymous visitor on /ui/, or a user whose
+          memberships have all been archived. The mark and the name without a
+          button or a panel, rather than a control that toggles a state nothing
+          shows. (A user with exactly ONE workspace still gets the panel: the
+          list is truthy, and it carries "New workspace" for anyone allowed to
+          make a second.)
+        {% endcomment %}
+        <div class="sidebar-ws-btn" title="{{ current_workspace.name|default:'Quikro' }}">
+            {% include "partials/_logo.html" with workspace=current_workspace only %}
+            <span class="sidebar-ws-name">{{ current_workspace.name|default:"Quikro" }}</span>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% comment %}
+      One renderer for both sets of rows, so a settings row collapses to a
+      glyph, carries a `title` at 60px and lights up by the same `active` the
+      sidebar has always used — the settings column had its own markup for all
+      three. `aria-label` follows the rows rather than staying "Main": with the
+      product's nav not on the page, calling this one "Main" would announce a
+      list that is not there.
+    {% endcomment %}
+    <nav class="sidebar-nav" aria-label="{% if settings_groups %}Settings{% else %}Main{% endif %}">
+        {% if settings_groups %}
+        {% include "partials/_sidebar_items.html" with groups=settings_groups %}
+        {% comment %}
+          The bell, pinned below the settings rows rather than listed among
+          them: it is not a settings destination, it is the product's one
+          unread indicator, and it has to be on every page or the count it
+          carries is only true on some of them. Rendered straight from its own
+          row — the same dict partials/_sidebar_items.html would hand it — so
+          the label, the count and the `active` flag have one source.
+        {% endcomment %}
+        {% if notifications_row %}
+        <div class="sidebar-nav-pinned">
+            {% include notifications_row.partial with item=notifications_row %}
+        </div>
+        {% endif %}
+        {% else %}
+        {% include "partials/_sidebar_items.html" with groups=nav_groups %}
+        {% comment %}
+          The workspace's channels, and the ones it could connect next. Inside
+          this nav rather than below it so the rows collapse with every other
+          row at 60px, and so one scroll container holds everything that can
+          grow — a workspace with six connections and a long flow list scrolls
+          once, not twice.
+        {% endcomment %}
+        {% include "partials/_sidebar_channels.html" %}
+        {% endif %}
+    </nav>
+
+    {% comment %}
+      The footer carries no nav rows. It held two — Library and Settings —
+      until Settings left the sidebar (the account menu below and the workspace
+      switcher above both lead there) and Library moved into the workspace
+      settings nav, beside the rest of the workspace's setup. What is left is
+      who you are and the collapse toggle.
+    {% endcomment %}
+    <div class="sidebar-footer">
+        {% if request.user.is_authenticated %}
+        {% comment %}
+          The account block is not a NavItem: it has no glyph and no route, it
+          is a menu trigger. Rendered straight from request.user so no CSS
+          class or display string is ever built in Python — see
+          test_no_python_file_emits_a_class_attribute.
+
+          Its two halves are swapped by CSS, not by x-show. Studio uses x-show
+          here and pays for it with two x-cloak flashes and an element whose
+          visibility depends on an inline `display:none` that Alpine has to
+          clear — the exact shape
+          test_no_element_combines_x_show_with_a_display_none_utility exists to
+          catch. The collapsed rules are already written twice for the
+          pre-paint mirror; these two are just two more.
+        {% endcomment %}
+        <div class="relative" x-data="{ meOpen: false }" @click.away="meOpen = false"
+             @keydown.escape.window="meOpen = false">
+            <div class="sidebar-footer-expanded">
+                <button type="button" class="sidebar-account" @click="meOpen = !meOpen"
+                        title="{{ request.user.display_name }}"
+                        aria-haspopup="true" :aria-expanded="meOpen ? 'true' : 'false'">
+                    <span class="avatar avatar-sm avatar-brand">{{ request.user.display_name|make_list|first|upper }}</span>
+                    <span class="flex-1 min-w-0 flex flex-col">
+                        <span class="sidebar-account-name">{{ request.user.display_name }}</span>
+                        <span class="sidebar-account-meta">{{ request.user.email }}</span>
+                    </span>
+                </button>
+                <button type="button" class="sidebar-toggle" @click="sidebarCollapsed = true"
+                        title="Collapse sidebar" aria-label="Collapse sidebar">
+                    <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3v18M16 15l-3-3 3-3M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z"/></svg>
+                </button>
+            </div>
+            <div class="sidebar-footer-collapsed">
+                <button type="button" class="sidebar-toggle" @click="sidebarCollapsed = false"
+                        title="Expand sidebar" aria-label="Expand sidebar">
+                    <svg class="scale-x-[-1]" width="16" height="16" fill="none" stroke="currentColor"
+                         viewBox="0 0 24 24" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"
+                         aria-hidden="true"><path d="M9 3v18M16 15l-3-3 3-3M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z"/></svg>
+                </button>
+                <button type="button" class="avatar avatar-sm avatar-brand" @click="meOpen = !meOpen"
+                        title="{{ request.user.display_name }}"
+                        aria-haspopup="true" :aria-expanded="meOpen ? 'true' : 'false'">{{ request.user.display_name|make_list|first|upper }}</button>
+            </div>
+
+            {% comment %}
+              Studio's organisation menu: the email, the organisation under it,
+              one framed way into the team, then the two rows that were already
+              here. It is stretched across the footer rather than given a width,
+              so it lines up with the account button that opens it; the rail
+              state has no content box to stretch across and is handled in
+              styles.css.
+
+              Signing out stays a POST. Studio's is an <a> to /accounts/logout/,
+              which is a GET that changes state — one prefetch or one crawler
+              and the session is gone. The row is a submit button styled as a
+              row rather than a link that looks like one.
+            {% endcomment %}
+            <div x-show="meOpen" x-cloak
+                 class="sidebar-menu sidebar-menu-account anim-collapse absolute bottom-full left-0 right-0 mb-2 z-50">
+                <div class="sidebar-menu-identity">
+                    <span class="sidebar-menu-identity-email">{{ request.user.email }}</span>
+                    {% if request.org %}
+                    <span class="sidebar-menu-identity-org">{{ request.org.name }}</span>
+                    {% endif %}
+                </div>
+                {% if members_url %}
+                <a href="{{ members_url }}" class="sidebar-menu-cta">
+                    {% include "partials/_nav_icon.html" with name="users" icon_size=16 only %}
+                    Manage team
+                </a>
+                {% endif %}
+                <div class="sidebar-menu-section">
+                    {% comment %}
+                      Named for where it lands, not for what it is: this row
+                      opens the settings shell on your profile, and the shell's
+                      Organisation group is the rest of what is behind it. It
+                      read "Settings" while there was a second one beside it in
+                      the switcher; "Organization Settings" is what tells the
+                      two apart from the account menu.
+                    {% endcomment %}
+                    <a href="{{ settings_home_url|default:'#' }}" class="sidebar-menu-row">
+                        {% include "partials/_nav_icon.html" with name="settings" icon_size=16 only %}
+                        <span>Organization Settings</span>
+                    </a>
+                </div>
+                {% if logout_url %}
+                <div class="sidebar-menu-section">
+                    <form method="post" action="{{ logout_url }}">
+                        {% csrf_token %}
+                        <button type="submit" class="sidebar-menu-row">
+                            {% include "partials/_nav_icon.html" with name="logout" icon_size=16 only %}
+                            <span>Sign out</span>
+                        </button>
+                    </form>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</aside>

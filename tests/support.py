@@ -1,0 +1,183 @@
+"""Object builders shared by every test module.
+
+BrightBean Studio copy-pastes a ``_make_user()`` into three test modules, each
+of which creates a user and then *deletes* the organization, workspace and
+membership that its ``post_save`` provisioning signal just made. That helper
+does not exist here: provisioning happens at signup and on first visit, never on
+``User.objects.create_user`` (see ``apps.accounts.services``), so a test that
+wants a bare user just makes one.
+
+Plain ``Model.objects.create`` throughout, matching the root ``conftest.py`` and
+Studio's convention — no factory_boy.
+"""
+
+from dataclasses import dataclass, field
+from typing import Any
+
+from django.contrib.auth import get_user_model
+
+from apps.members.models import OrgMembership, WorkspaceMembership
+from apps.members.roles import OrgRole, WorkspaceRole
+from apps.organizations.models import Organization
+from apps.workspaces.models import Workspace
+
+TEST_PASSWORD = "correct-horse-battery-staple"  # noqa: S105 - a test fixture, grants nothing
+
+
+def create_user(email: str, **extra: Any) -> Any:
+    """A user and nothing else — no organization, no workspace."""
+    return get_user_model().objects.create_user(email=email, password=TEST_PASSWORD, **extra)
+
+
+def make_connection(
+    workspace: Any,
+    *,
+    platform: str = "telegram",
+    suffix: str = "",
+    display_name: str = "",
+    external_id: str = "",
+    **fields: Any,
+) -> Any:
+    """One channel connection, active unless ``status`` says otherwise.
+
+    The one builder for this model. There were four — in the messaging
+    conftest, in the channels model tests, and once per test class that needed
+    a connection for the shell — which is three places to miss the
+    ``rotate_webhook_secret()`` a saved connection needs.
+
+    ``external_id`` is namespaced by default: SPEC §5's unique on ``(platform,
+    external_id)`` is deployment-wide, so a fixed literal makes two tenancies in
+    one test collide.
+    """
+    from apps.channels.models import ChannelConnection
+
+    connection = ChannelConnection(
+        workspace=workspace,
+        platform=platform,
+        display_name=display_name or f"{platform} {suffix or workspace.pk}",
+        external_id=external_id or f"{platform}-{suffix or workspace.pk}",
+        **fields,
+    )
+    connection.rotate_webhook_secret()
+    connection.save()
+    return connection
+
+
+@dataclass
+class Tenancy:
+    """One organization, one workspace, and a user holding each role.
+
+    ``owner`` is the org owner and a workspace admin. ``members`` maps each
+    ``WorkspaceRole`` value to a user who holds exactly that role in
+    ``workspace`` and is an ordinary org member.
+    """
+
+    slug: str
+    organization: Organization
+    workspace: Workspace
+    owner: Any
+    members: dict[str, Any] = field(default_factory=dict)
+
+    def user_for(self, role: str) -> Any:
+        return self.members[role]
+
+    def membership_for(self, role: str) -> WorkspaceMembership:
+        return WorkspaceMembership.objects.get(user=self.members[role], workspace=self.workspace)
+
+    @property
+    def org_membership(self) -> OrgMembership:
+        return OrgMembership.objects.get(user=self.owner, organization=self.organization)
+
+
+def create_tenancy(slug: str, *, workspace_name: str | None = None) -> Tenancy:
+    """Build a complete tenant: org, workspace, owner and one user per role."""
+    organization = Organization.objects.create(name=f"{slug} org")
+    workspace = Workspace.objects.create(organization=organization, name=workspace_name or f"{slug} workspace")
+
+    owner = create_user(f"owner@{slug}.test")
+    OrgMembership.objects.create(user=owner, organization=organization, org_role=OrgRole.OWNER)
+    WorkspaceMembership.objects.create(user=owner, workspace=workspace, workspace_role=WorkspaceRole.ADMIN)
+    owner.last_workspace_id = workspace.pk
+    owner.save(update_fields=["last_workspace_id"])
+
+    members: dict[str, Any] = {}
+    for role in WorkspaceRole:
+        user = create_user(f"{role.value}@{slug}.test")
+        OrgMembership.objects.create(user=user, organization=organization, org_role=OrgRole.MEMBER)
+        WorkspaceMembership.objects.create(user=user, workspace=workspace, workspace_role=role.value)
+        user.last_workspace_id = workspace.pk
+        user.save(update_fields=["last_workspace_id"])
+        members[role.value] = user
+
+    return Tenancy(slug=slug, organization=organization, workspace=workspace, owner=owner, members=members)
+
+
+def org_platform_credential(
+    tenancy: Any,
+    platform: str,
+    *,
+    client_id: str,
+    client_secret: str,
+    extra: dict[str, str] | None = None,
+) -> Any:
+    """An organization-level Meta app — the lower level of SPEC §4's chain.
+
+    Lives here rather than beside either caller because
+    ``apps/channels/tests/test_instagram_webhook.py`` and
+    ``test_messenger_e2e.py`` both need exactly this to exercise the level below
+    the environment, and a second copy drifts the moment the model or the
+    django-stubs suppression below changes. Same rule ``email_identity`` states.
+
+    The two required keys are named parameters rather than ``**kwargs`` so a
+    misspelling is a ``TypeError`` here instead of a credential row that silently
+    fails ``derive_is_configured`` and surfaces as an unexplained 403 in whatever
+    test built it. ``extra`` carries the alias spellings and anything else a
+    specific test needs.
+
+    Imports are function-local, for the reason that helper gives.
+    """
+    from apps.credentials.models import PlatformCredential
+
+    credential = PlatformCredential(organization=tenancy.organization, platform=platform)
+    # ``EncryptedJSONField`` subclasses ``TextField``, so django-stubs types the
+    # attribute as ``str`` even though the column holds JSON — the same
+    # suppression ``instagram_oauth.store_credentials`` carries.
+    credential.credentials = {  # type: ignore[assignment]
+        "client_id": client_id,
+        "client_secret": client_secret,
+        **(extra or {}),
+    }
+    credential.save()
+    return credential
+
+
+def email_identity(workspace: Any, connection: Any, address: str) -> Any:
+    """A contact with an opted-in email identity on ``connection``.
+
+    Lives here rather than beside either caller because both
+    ``apps/channels/tests/test_email_suppression.py`` and
+    ``tests/acceptance/test_unsubscribe_round_trip.py`` need exactly this, and a
+    second copy drifts the moment ``ContactChannelIdentity`` gains a field —
+    quietly building an identity the product no longer produces. Same rule
+    ``tests/ssrf.py`` states for its own consolidation.
+
+    Imports are function-local: this module is imported by suites running in
+    deployments that may not have messaging installed, and a top-level import
+    would make it a hard dependency of every one of them.
+    """
+    from django.utils import timezone
+
+    from apps.common.platforms import Platform
+    from apps.contacts.services import create_contact
+    from apps.messaging.models import ContactChannelIdentity
+
+    contact = create_contact(workspace, source="manual", email=address)
+    return ContactChannelIdentity.objects.create(
+        contact=contact,
+        channel_connection=connection,
+        platform=Platform.EMAIL.value,
+        platform_user_id=address,
+        opt_in=True,
+        opt_in_at=timezone.now(),
+        opt_in_source="data_collection",
+    )

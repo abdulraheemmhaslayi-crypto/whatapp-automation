@@ -1,0 +1,68 @@
+{% load common_extras %}{% comment %}
+One template, as both the gallery and the flows empty state show it. Everything
+here is text from the validated document or from TEMPLATE_COPY — no |safe, no
+mark_safe, matching the rule the review page states: a template's message bodies
+carry {{placeholders}} that only apps.flows.rendering ever substitutes, and
+showing one must not be the exception.
+
+A plain form rather than hx-post: the response is a redirect to the mapping page,
+which is what the upload form already does.
+
+`searchable` is what the gallery page passes and the empty state does not.
+matches() is defined in template_gallery.html's x-data, and the empty state sits
+inside list.html's, which has no such method — an unguarded x-show there throws
+inside Alpine's evaluator on every card, on every render of the core Flows page.
+{% endcomment %}
+<article class="tpl-card"
+         {% if searchable %}x-show="matches('{{ entry.card.name|escapejs }} {{ entry.card.summary|escapejs }}', '{{ entry.card.category|escapejs }}', '{% for platform in entry.platforms %}{{ platform.key|escapejs }} {% endfor %}')"{% endif %}>
+    {% comment %}
+      The card's head says where it runs and how it starts (HANDOFF §3,
+      Templates): the channel's own glyph and name, and the trigger as a tag.
+    {% endcomment %}
+    <div class="flex items-center justify-between gap-2">
+        <span class="flex items-center gap-1.5 min-w-0 text-[12px] font-semibold" style="color: var(--text-secondary);">
+            {% for platform in entry.platforms|slice:":1" %}
+            <span class="pi-chip {{ platform.key|platform_class }} w-4 h-4 flex-shrink-0">{% include "partials/_platform_icon.html" with platform=platform.key size="sm" %}</span>
+            <span class="truncate">{{ platform.label }}</span>
+            {% empty %}
+            <span class="truncate">Any channel</span>
+            {% endfor %}
+        </span>
+        {% if entry.triggers %}<span class="tpl-tag">{{ entry.triggers.0 }}</span>{% endif %}
+    </div>
+
+    <div>
+        <h2 class="text-[15px] font-semibold leading-snug" style="color: var(--text-primary);">{{ entry.card.name }}</h2>
+        {% if entry.card.summary %}
+        <p class="text-[13px] mt-1 leading-relaxed" style="color: var(--text-tertiary);">{{ entry.card.summary }}</p>
+        {% endif %}
+    </div>
+
+    {% comment %}
+    The channels it needs and whether you have them. A template that needs
+    Instagram is worth knowing about before the review page asks you to map it,
+    not after — and "connected" here means an *active* connection, because a
+    disabled or re-auth-pending one cannot send. It warns; it never blocks.
+    Somebody may legitimately be reading a template before connecting anything.
+    Only the missing ones are listed: a connected channel is already named in
+    the card's head, and repeating it as a chip was noise.
+    {% endcomment %}
+    <div class="flex flex-wrap items-center gap-1.5 empty:hidden">{% for platform in entry.platforms %}{% if not platform.connected %}<span class="status-pill status-pill-warning">Needs {{ platform.label }}</span>{% endif %}{% endfor %}{% for need in entry.needs %}<span class="status-pill">Needs {{ need|lower }}</span>{% endfor %}{% if entry.card.calls_out %}<span class="status-pill" title="This template contains a step that sends a request to another service.">Calls out to the internet</span>{% endif %}</div>
+    {% comment %}
+      "Calls out to the internet": installing a template only ever touches your
+      own workspace — except for this. An external_request node sends whatever
+      the flow gathered to a third party, which is worth knowing before the
+      install, not after.
+    {% endcomment %}
+
+    {% comment %}
+      One secondary button per card. Every card used to carry the orange one,
+      which on a grid of twenty made the page a wall of calls to action; the
+      choice of template is the action, and none of them outranks another.
+    {% endcomment %}
+    <form method="post" action="{{ entry.start_url }}" class="mt-auto flex items-center justify-between gap-3 pt-1">
+        {% csrf_token %}
+        <span class="text-[12px]" style="color: var(--text-tertiary);">{{ entry.card.step_count }} step{{ entry.card.step_count|pluralize }}{% if not entry.triggers %} · started by another flow{% endif %}</span>
+        <button type="submit" class="btn-pill-secondary btn-pill-sm">Use template</button>
+    </form>
+</article>

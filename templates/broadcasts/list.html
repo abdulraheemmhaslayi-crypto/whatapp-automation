@@ -1,0 +1,101 @@
+﻿{% extends "base.html" %}
+{% load common_extras %}
+{% comment %}
+The broadcast list (SPEC §13). Everything below the toolbar is _rows.html, so
+the table has exactly one renderer: the filters fetch it, and every mutation
+answers with a `broadcastsChanged` event that makes it re-fetch itself.
+
+The "New broadcast" form offers only connections the policy table says permit
+broadcasts — apps/broadcasts/composer.py::broadcastable_connections — which is
+where SPEC §13.2's "Instagram never appears in the broadcast channel selector"
+actually happens. There is no platform name in this file.
+{% endcomment %}
+
+{% block title %}Broadcasts · Quikro{% endblock %}
+
+{% block page_header %}
+<div class="page-header max-w-[1060px]">
+    <div class="page-header-text">
+        <h1 class="page-title">Broadcasts</h1>
+        <p class="page-lede">
+            One message to many contacts, filtered for compliance before it goes out.
+        </p>
+    </div>
+    {% if connections %}
+    <div class="page-header-actions">
+        <button type="button" class="btn-pill-primary" @click="$modal('new-broadcast')">
+            {% include "partials/_nav_icon.html" with name="plus" icon_size=16 %} New broadcast
+        </button>
+    </div>
+    {% endif %}
+</div>
+
+{% comment %}
+  No close_on: a created draft answers with HX-Redirect into the composer, so
+  the page leaves under the dialog. A refusal is a 204 toast, and the dialog
+  stays open with what was typed.
+{% endcomment %}
+{% if connections %}
+{% modal "new-broadcast" title="New broadcast" %}
+<form hx-post="{% url 'broadcasts:create' workspace_id=request.workspace.id %}" hx-swap="none">
+    <div class="bb-modal-body">
+        <div class="field">
+            <label class="field-label" for="new-broadcast-name">What is this broadcast called?</label>
+            <input class="form-input-styled" id="new-broadcast-name" type="text" name="name" maxlength="200" required autofocus placeholder="Spring sale announcement">
+        </div>
+        <div class="field">
+            <label class="field-label" for="new-broadcast-connection">Channel</label>
+            <select class="form-input-styled bb-select" id="new-broadcast-connection" name="connection_id" required>
+                {% for connection in connections %}
+                <option value="{{ connection.id }}">{{ connection.display_name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+    </div>
+    <div class="bb-modal-actions">
+        <button type="button" class="btn-pill-secondary" @click="close()">Cancel</button>
+        <button type="submit" class="btn-pill-primary">Create broadcast</button>
+    </div>
+</form>
+{% endmodal %}
+{% endif %}
+{% endblock %}
+
+{% block content %}
+{% if not connections %}
+<div class="alert-info mb-4">
+    No channel in this workspace accepts broadcasts yet. Connect one in
+    <a href="{% url 'channels:list' workspace_id=request.workspace.id %}">channel settings</a> first.
+</div>
+{% endif %}
+
+<div class="max-w-[1060px] w-full" x-data="{
+        q: '{{ q|escapejs }}',
+        filters: {{ filters|json_attr }},
+        reload() { this.$nextTick(() => this.$refs.filters.dispatchEvent(new Event('filters-changed'))); },
+        clearFilters() { this.q = ''; Object.keys(this.filters).forEach(k => this.filters[k] = []); this.reload(); }
+     }">
+
+    <div class="mb-5">
+    <form id="broadcast-filters" x-ref="filters"
+          class="list-toolbar"
+          hx-get="{% url 'broadcasts:rows' workspace_id=request.workspace.id %}"
+          hx-target="#broadcast-rows"
+          hx-swap="innerHTML"
+          hx-trigger="input changed delay:300ms from:#broadcast-q, filters-changed, broadcastsChanged from:body, broadcastChanged from:body"
+          @submit.prevent>
+        <label class="search-field w-full sm:w-64">
+            {% include "partials/_nav_icon.html" with name="search" icon_size=16 %}
+            <input id="broadcast-q" type="search" name="q" x-model="q" placeholder="Search broadcasts"
+                   class="search-input" aria-label="Search broadcasts">
+        </label>
+        {% filter_popover groups=filter_groups onchange="reload()" target="#broadcast-rows" count=broadcasts|length noun="broadcast" %}
+    </form>
+    {% filter_chips groups=filter_groups onchange="reload()" %}
+    </div>
+
+    <div id="broadcast-rows">
+        {% include "broadcasts/_rows.html" %}
+    </div>
+</div>
+{% endblock %}

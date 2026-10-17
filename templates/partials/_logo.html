@@ -1,0 +1,43 @@
+﻿{% load static %}{% comment %}
+The product/workspace mark. Renders the workspace icon when there is one, the
+workspace's initial when there is not, and the Quikro logo when there
+is no workspace at all (the anonymous and pre-tenancy case).
+
+Include this with `only`: the size is read from an argument, and without `only`
+an unrelated `size` in the surrounding context would silently resize the mark.
+
+Args:
+  workspace: optional object with .icon and .name.
+  size: "sm" (28px) or "md" (30px, default). Those are the only two, and a
+        third one passed here is a silent no-op rather than an error — which
+        is what happened for the whole life of the old rail, whose button
+        asked for size="lg" against a partial that only ever branched on "sm".
+        TestLogoSizing pins every modifier this file emits to a rule that
+        exists in the compiled bundle, so the next one cannot rot the same way.
+
+Both text marks are aria-hidden: they are decoration beside a name that
+carries the meaning, which is what the product logo's `alt=""` says one branch
+down. Left audible, a reader announces the emoji's Unicode name — or a bare
+initial — before every workspace name in the switcher.
+
+The size modifier is a class from the design system, not a Tailwind utility.
+.sidebar-logo-mark is unlayered CSS and Tailwind's w-7/h-7 live in
+@layer utilities, so the utility loses the cascade and never applies.
+{% endcomment %}{% with px=size|default:"md" %}
+{% if workspace and workspace.icon %}
+{% comment %}
+  An emoji, not a file. Studio's Workspace.icon is an ImageField and this read
+  `workspace.icon.url`; here it is a short CharField (an ImageField would mean
+  taking Pillow for one decorative field — see apps/workspaces/models.py), and
+  `.url` on a str resolves to the empty string in a template rather than
+  raising. Every workspace that had set an emoji was therefore rendering
+  `<img src="">`: a broken-image mark, silently, for exactly the workspaces
+  that had bothered to choose one.
+{% endcomment %}
+<div class="sidebar-logo-mark{% if px == "sm" %} sidebar-logo-mark-sm{% endif %}" aria-hidden="true">{{ workspace.icon }}</div>
+{% elif workspace %}
+<div class="sidebar-logo-mark{% if px == "sm" %} sidebar-logo-mark-sm{% endif %}" aria-hidden="true">{{ workspace.name|make_list|first|upper }}</div>
+{% else %}
+<img src="{% static 'img/quikro-logo-small.webp' %}" alt="Quikro" class="sidebar-logo-mark{% if px == "sm" %} sidebar-logo-mark-sm{% endif %}">
+{% endif %}
+{% endwith %}

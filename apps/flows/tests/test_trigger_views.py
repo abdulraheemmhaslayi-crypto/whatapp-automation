@@ -1,0 +1,626 @@
+"""The Triggers panel: CRUD, role gating, refusals, and the QR endpoint."""
+
+import json
+from html.parser import HTMLParser
+
+import pytest
+import segno
+from django.urls import reverse
+
+from apps.common.platforms import Platform
+from apps.flows.models import Trigger, TriggerType
+from apps.flows.tests.support import connection_for, graph, node, published_flow
+from apps.flows.triggers import qr
+from apps.flows.triggers.registry import spec_for
+
+NOOP_ACTION = {"actions": [{"verb": "remove_tag", "tag": "not-a-tag-here"}]}
+
+
+@pytest.fixture
+def flow(tenancy):
+    return published_flow(tenancy.workspace, graph([node("a", "action", NOOP_ACTION)]), name="Ref flow")
+
+
+def _url(name, tenancy, flow, **extra):
+    return reverse(name, kwargs={"workspace_id": tenancy.workspace.pk, "flow_id": flow.pk, **extra})
+
+
+def _trigger(flow, trigger_type=TriggerType.KEYWORD, config=None, *, connection=None, priority=0):
+    trigger = Trigger(
+        flow=flow,
+        channel_connection=connection,
+        type=trigger_type,
+        config_json=config if config is not None else {"keywords": [{"text": "help", "mode": "contains"}]},
+        priority=priority,
+    )
+    trigger.save()
+    return trigger
+
+
+def _form_values(html):
+    """The submittable fields of a rendered trigger form, as a POST dict.
+
+    Parsed rather than hand-written so the test exercises what the *template*
+    produced. A hand-written POST dict would have passed happily while the
+    boxes on screen held template source.
+    """
+    parser = _FormReader()
+    parser.feed(html)
+    return parser.values
+
+
+class _FormReader(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.values = {}
+        self._textarea = None
+        self._select = None
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        # An <option> carries no name of its own -- it belongs to the <select>
+        # still open around it -- so it has to be read before the name check.
+        if tag == "option":
+            if self._select is not None and "selected" in attrs:
+                self.values[self._select] = attrs.get("value", "")
+            return
+        name = attrs.get("name")
+        if not name:
+            return
+        if tag == "textarea":
+            self._textarea = name
+            self.values[name] = ""
+        elif tag == "select":
+            self._select = name
+            # A <select> with nothing marked selected submits its first option.
+            self.values.setdefault(name, "")
+        elif tag == "input":
+            kind = attrs.get("type", "text")
+            if kind in {"checkbox", "radio"} and "checked" not in attrs:
+                return
+            self.values[name] = attrs.get("value", "on")
+
+    def handle_data(self, data):
+        if self._textarea is not None:
+            self.values[self._textarea] += data
+
+    def handle_endtag(self, tag):
+        if tag == "textarea":
+            self._textarea = None
+        elif tag == "select":
+            self._select = None
+
+
+#: The form slot with nothing in it. The panel carries its own "Add" form
+#: whatever happens, so asserting on ``<form`` would pass for either outcome.
+_EMPTY_FORM_SLOT = b'<div id="trigger-form" class="mt-4"></div>'
+
+
+def _events(response):
+    raw = response.headers.get("HX-Trigger")
+    return json.loads(raw) if raw else {}
+
+
+@pytest.mark.django_db
+class TestThePanel:
+    def test_a_viewer_can_read_it(self, tenancy, client_for, flow):
+        _trigger(flow)
+        response = client_for(tenancy.user_for("viewer")).get(_url("flows:trigger_panel", tenancy, flow))
+
+        assert response.status_code == 200
+        assert b"help" in response.content
+
+    def test_it_opens_on_one_trigger_when_asked(self, tenancy, client_for, flow):
+        """Clicking a trigger card on the canvas asks for this. The panel comes
+        back with that trigger's edit form already rendered, rather than the
+        list plus a second round trip."""
+        trigger = _trigger(flow)
+
+        response = client_for(tenancy.owner).get(_url("flows:trigger_panel", tenancy, flow) + f"?trigger={trigger.pk}")
+
+        assert response.status_code == 200
+        assert _url("flows:trigger_update", tenancy, flow, trigger_id=trigger.pk).encode() in response.content
+
+    def test_an_unknown_trigger_id_is_ignored_rather_than_404(self, tenancy, client_for, flow):
+        """A card clicked after the trigger was deleted in another tab. Ignoring
+        it costs the user a list instead of an error page — and, because the id
+        is matched against rows already loaded, tells a prober nothing."""
+        _trigger(flow)
+
+        response = client_for(tenancy.owner).get(
+            _url("flows:trigger_panel", tenancy, flow) + "?trigger=01a00000-0000-7000-0000-000000000000"
+        )
+
+        assert response.status_code == 200
+        assert _EMPTY_FORM_SLOT in response.content
+
+    def test_a_trigger_from_another_flow_is_ignored(self, tenancy, client_for, flow):
+        other = published_flow(tenancy.workspace, graph([node("a", "action", NOOP_ACTION)]), name="Other")
+        stranger = _trigger(other)
+
+        response = client_for(tenancy.owner).get(_url("flows:trigger_panel", tenancy, flow) + f"?trigger={stranger.pk}")
+
+        assert response.status_code == 200
+        assert _EMPTY_FORM_SLOT in response.content
+
+    def test_a_viewer_gets_no_form_even_when_focused(self, tenancy, client_for, flow):
+        """trigger_panel is member-readable but trigger_form needs edit_flows.
+        Focusing must not become the looser route to the tighter thing."""
+        trigger = _trigger(flow)
+
+        response = client_for(tenancy.user_for("viewer")).get(
+            _url("flows:trigger_panel", tenancy, flow) + f"?trigger={trigger.pk}"
+        )
+
+        assert response.status_code == 200
+        assert _EMPTY_FORM_SLOT in response.content
+
+    def test_a_focused_rule_trigger_still_gets_its_filter_bar(self, tenancy, client_for, flow):
+        """The filter bar is built only for the rule type and only in the form
+        context. Extracting that context is what keeps both routes equal."""
+        trigger = _trigger(flow, TriggerType.RULE, {"event": "contact_created", "filters": None})
+
+        response = client_for(tenancy.owner).get(_url("flows:trigger_panel", tenancy, flow) + f"?trigger={trigger.pk}")
+
+        assert response.status_code == 200
+        assert response.context["filter_config"] is not None
+
+    def test_it_warns_about_a_second_enabled_default_reply(self, tenancy, client_for, flow):
+        """Legal, and resolved by priority like every type — but the second one
+        can never fire, and nothing else would ever say so."""
+        _trigger(flow, TriggerType.DEFAULT_REPLY, {}, priority=0)
+        _trigger(flow, TriggerType.DEFAULT_REPLY, {}, priority=10)
+
+        response = client_for(tenancy.owner).get(_url("flows:trigger_panel", tenancy, flow))
+
+        assert b"More than one" in response.content
+        # The label the rest of the panel uses, not the column value. Read from
+        # the registry rather than typed out: the labels are copy — nothing but
+        # `type` is a contract — and this test is about which register the
+        # warning speaks in, not about the wording of the day.
+        assert spec_for(TriggerType.DEFAULT_REPLY).label.encode() in response.content
+        assert b"default_reply trigger" not in response.content
+
+    def test_every_trigger_type_can_be_created_from_the_panel(self, tenancy, client_for, flow):
+        """Including `api`: entrypoint_only means no webhook selects it, not that
+        nobody may make one — and #25's flow-start endpoint needs one to exist."""
+        response = client_for(tenancy.owner).get(_url("flows:trigger_panel", tenancy, flow))
+
+        # One option card per type, each opening that type's form.
+        for value in TriggerType.values:
+            assert f"triggers/form/?type={value}".encode() in response.content, value
+
+    def test_keyword_text_is_escaped(self, tenancy, client_for, flow):
+        """Keyword text is user-authored (SECURITY-BASELINE §2)."""
+        _trigger(flow, config={"keywords": [{"text": "<script>alert(1)</script>", "mode": "exact"}]})
+
+        response = client_for(tenancy.owner).get(_url("flows:trigger_panel", tenancy, flow))
+
+        assert b"<script>alert(1)</script>" not in response.content
+        assert b"&lt;script&gt;" in response.content
+
+
+@pytest.mark.django_db
+class TestTheForm:
+    """Every per-type form partial renders.
+
+    Without this the only reference to ``flows:trigger_form`` asserted a 404, so
+    the five form templates were never rendered by anything — a mistyped filter
+    argument or an unbalanced block tag in one of them would have passed CI and
+    500'd the first editor who clicked Add.
+    """
+
+    @pytest.mark.parametrize("trigger_type", list(TriggerType.values))
+    def test_the_create_form_renders_for_every_type(self, tenancy, client_for, flow, trigger_type):
+        response = client_for(tenancy.owner).get(_url("flows:trigger_form", tenancy, flow) + f"?type={trigger_type}")
+
+        assert response.status_code == 200
+        assert b"<form" in response.content
+
+    @pytest.mark.parametrize("trigger_type", [TriggerType.KEYWORD, TriggerType.REF_URL, TriggerType.COMMENT])
+    def test_the_edit_form_renders_a_stored_config(self, tenancy, client_for, flow, trigger_type):
+        from apps.flows.triggers.registry import spec_for
+
+        config = {"keywords": [{"text": "help", "mode": "exact"}]} if trigger_type == TriggerType.KEYWORD else None
+        if trigger_type == TriggerType.REF_URL:
+            config = {"ref": "promo"}
+        if trigger_type == TriggerType.COMMENT:
+            config = spec_for(trigger_type).default_config()
+        trigger = _trigger(flow, trigger_type, config)
+
+        response = client_for(tenancy.owner).get(_url("flows:trigger_form", tenancy, flow) + f"?trigger={trigger.pk}")
+
+        assert response.status_code == 200
+        assert b"<form" in response.content
+
+    def test_the_form_closes_only_on_a_real_save(self, tenancy, client_for, flow):
+        """The template keys its close on the ``triggersChanged`` header rather
+        than on ``event.detail.successful``, because every refusal is
+        deliberately 2xx — htmx drops HX-Trigger on anything else — so
+        ``successful`` is true for a rejected save too and the form would wipe
+        the user's input before they could correct it.
+
+        Asserting the header contract here is what keeps that template line
+        honest: a save carries the event, a refusal does not.
+        """
+        saved = client_for(tenancy.owner).post(
+            _url("flows:trigger_create", tenancy, flow),
+            {"type": TriggerType.KEYWORD, "keyword_text": ["help"], "keyword_mode": ["contains"]},
+        )
+        refused = client_for(tenancy.owner).post(
+            _url("flows:trigger_create", tenancy, flow),
+            {"type": TriggerType.KEYWORD, "keyword_text": [""], "keyword_mode": ["contains"]},
+        )
+
+        assert 200 <= saved.status_code < 300 and 200 <= refused.status_code < 300
+        assert "triggersChanged" in saved.headers["HX-Trigger"]
+        assert "triggersChanged" not in refused.headers["HX-Trigger"]
+
+    def test_the_template_does_not_close_on_bare_success(self, tenancy):
+        """Guards the handler itself, since no Python path exercises it.
+
+        Read off the attribute rather than the whole file — the comment beside it
+        names ``event.detail.successful`` to explain why it is *not* used.
+        """
+        from pathlib import Path
+
+        markup = Path("templates/flows/_trigger_form.html").read_text()
+        handler = next(line for line in markup.splitlines() if "@htmx:after-request" in line)
+
+        assert "event.detail.successful" not in handler
+        assert "triggersChanged" in handler
+
+    def test_an_unknown_type_is_refused_without_a_500(self, tenancy, client_for, flow):
+        response = client_for(tenancy.owner).get(_url("flows:trigger_form", tenancy, flow) + "?type=teleport")
+
+        assert 200 <= response.status_code < 300
+        assert "triggersChanged" not in _events(response)
+
+    def test_a_malformed_trigger_id_is_404_not_500(self, tenancy, client_for, flow):
+        response = client_for(tenancy.owner).get(_url("flows:trigger_form", tenancy, flow) + "?trigger=not-a-uuid")
+
+        assert response.status_code == 404
+
+    def test_the_edit_form_does_not_leak_its_own_template_source(self, tenancy, client_for, flow):
+        """Four textareas here once held an unparseable ``{{ …|join:"…" }}``.
+
+        Django's lexer does not match a tag across a newline, so each one was
+        emitted verbatim as the textarea's *content* and saved back as config on
+        the next submit. The old test asserted only that a ``<form`` was
+        present, which that bug satisfied perfectly.
+        """
+        config = {
+            "post_scope": "specific",
+            "post_ids": ["17900000000000000"],
+            "include_keywords": ["PRICE"],
+            "exclude_keywords": ["refund"],
+            "top_level_only": True,
+            "public_reply": {"mode": "static", "texts": ["Just sent you a DM!"]},
+            "like_comment": False,
+            "once_per_contact_per_post": True,
+        }
+        trigger = _trigger(flow, TriggerType.COMMENT, config)
+
+        response = client_for(tenancy.owner).get(_url("flows:trigger_form", tenancy, flow) + f"?trigger={trigger.pk}")
+
+        assert response.status_code == 200
+        body = response.content
+        assert b"|join:" not in body
+        assert b"{{" not in body
+        # The values themselves still reach their boxes.
+        assert b"PRICE" in body
+        assert b"Just sent you a DM!" in body
+
+    def test_a_stored_comment_config_survives_a_save_that_changes_nothing(self, tenancy, client_for, flow):
+        """Open the form, press Save, and get back exactly what was stored.
+
+        This is the round trip the bug broke: the template source rendered into
+        the boxes parsed as two perfectly valid keywords, so the schema accepted
+        it and ``include_keywords`` silently became junk that matched no comment
+        at all.
+        """
+        config = {
+            "post_scope": "specific",
+            "post_ids": ["17900000000000000", "17900000000000001"],
+            "include_keywords": ["PRICE", "cost"],
+            "exclude_keywords": ["refund"],
+            "top_level_only": True,
+            "public_reply": {"mode": "static", "texts": ["Just sent you a DM!"]},
+            "like_comment": False,
+            "once_per_contact_per_post": True,
+        }
+        trigger = _trigger(flow, TriggerType.COMMENT, config)
+        client = client_for(tenancy.owner)
+
+        rendered = client.get(_url("flows:trigger_form", tenancy, flow) + f"?trigger={trigger.pk}")
+        post = _form_values(rendered.content.decode())
+
+        saved = client.post(
+            _url("flows:trigger_update", tenancy, flow, trigger_id=trigger.pk),
+            post,
+        )
+
+        assert saved.status_code == 204
+        assert _events(saved).get("triggersChanged")
+        trigger.refresh_from_db()
+        assert trigger.config_json == config
+
+
+@pytest.mark.django_db
+class TestMutations:
+    def test_an_editor_can_create_one(self, tenancy, client_for, flow):
+        response = client_for(tenancy.user_for("editor")).post(
+            _url("flows:trigger_create", tenancy, flow),
+            {"type": TriggerType.KEYWORD, "keyword_text": ["help"], "keyword_mode": ["contains"]},
+        )
+
+        assert response.status_code == 204
+        assert _events(response).get("triggersChanged") is True
+        assert Trigger.objects.for_workspace(tenancy.workspace).count() == 1
+
+    def test_a_refusal_is_also_2xx_and_carries_no_change_event(self, tenancy, client_for, flow):
+        """htmx drops HX-Trigger on a non-2xx, so a 400 would show no toast at
+        all — the request would simply appear to do nothing."""
+        response = client_for(tenancy.owner).post(
+            _url("flows:trigger_create", tenancy, flow),
+            {"type": TriggerType.KEYWORD, "keyword_text": [""], "keyword_mode": ["contains"]},
+        )
+
+        assert 200 <= response.status_code < 300
+        assert "triggersChanged" not in _events(response)
+        assert not Trigger.objects.for_workspace(tenancy.workspace).exists()
+
+    def test_a_keyword_list_that_does_not_line_up_is_refused(self, tenancy, client_for, flow):
+        """Zipping to the shorter list would give somebody a trigger matching
+        words they did not configure, in modes they did not pick."""
+        response = client_for(tenancy.owner).post(
+            _url("flows:trigger_create", tenancy, flow),
+            {"type": TriggerType.KEYWORD, "keyword_text": ["a", "b"], "keyword_mode": ["contains"]},
+        )
+
+        assert "triggersChanged" not in _events(response)
+        assert not Trigger.objects.for_workspace(tenancy.workspace).exists()
+
+    def test_a_connection_the_type_cannot_run_on_is_refused(self, tenancy, client_for, flow):
+        """The picker's option list is a convenience; this is the gate."""
+        sms = connection_for(tenancy.workspace, platform=Platform.SMS, external_id="+15550005")
+        response = client_for(tenancy.owner).post(
+            _url("flows:trigger_create", tenancy, flow),
+            {"type": TriggerType.WELCOME, "channel_connection": str(sms.pk)},
+        )
+
+        assert "triggersChanged" not in _events(response)
+        assert not Trigger.objects.for_workspace(tenancy.workspace).exists()
+
+    def test_a_duplicate_ref_is_refused(self, tenancy, client_for, flow):
+        _trigger(flow, TriggerType.REF_URL, {"ref": "promo"})
+        response = client_for(tenancy.owner).post(
+            _url("flows:trigger_create", tenancy, flow),
+            {"type": TriggerType.REF_URL, "ref": "promo"},
+        )
+
+        assert "triggersChanged" not in _events(response)
+        assert Trigger.objects.for_workspace(tenancy.workspace).count() == 1
+
+    def test_toggling_flips_enabled(self, tenancy, client_for, flow):
+        trigger = _trigger(flow)
+        client_for(tenancy.owner).post(_url("flows:trigger_toggle", tenancy, flow, trigger_id=trigger.pk))
+
+        trigger.refresh_from_db()
+        assert trigger.enabled is False
+
+    def test_moving_swaps_the_neighbours(self, tenancy, client_for, flow):
+        first = _trigger(flow, priority=0)
+        second = _trigger(flow, priority=10)
+
+        client_for(tenancy.owner).post(
+            _url("flows:trigger_move", tenancy, flow, trigger_id=second.pk), {"direction": "up"}
+        )
+
+        first.refresh_from_db()
+        second.refresh_from_db()
+        assert second.priority < first.priority
+
+    def test_a_new_trigger_does_not_collide_with_another_flows(self, tenancy, client_for, flow):
+        """Priority is workspace-wide because matching is. Numbering each flow
+        from zero gave every flow a priority-0 trigger, and two flows with an
+        overlapping keyword were then separated only by a hidden created_at
+        tie-break no user could change."""
+        other = published_flow(tenancy.workspace, graph([node("a", "action", NOOP_ACTION)]), name="Other")
+        _trigger(other)
+
+        client_for(tenancy.owner).post(
+            _url("flows:trigger_create", tenancy, flow),
+            {"type": TriggerType.KEYWORD, "keyword_text": ["help"], "keyword_mode": ["contains"]},
+        )
+
+        priorities = sorted(Trigger.objects.for_workspace(tenancy.workspace).values_list("priority", flat=True))
+        assert len(set(priorities)) == len(priorities), priorities
+
+    def test_moving_reorders_against_another_flows_trigger(self, tenancy, client_for, flow):
+        """The neighbour a move swaps with may belong to a different flow — that
+        is the whole point, because those are the two triggers competing for the
+        same message."""
+        other = published_flow(tenancy.workspace, graph([node("a", "action", NOOP_ACTION)]), name="Other")
+        theirs = _trigger(other, priority=0)
+        mine = _trigger(flow, priority=10)
+
+        client_for(tenancy.owner).post(
+            _url("flows:trigger_move", tenancy, flow, trigger_id=mine.pk), {"direction": "up"}
+        )
+
+        mine.refresh_from_db()
+        theirs.refresh_from_db()
+        assert mine.priority < theirs.priority
+
+    def test_moving_past_the_end_is_a_no_op(self, tenancy, client_for, flow):
+        only = _trigger(flow)
+        client_for(tenancy.owner).post(
+            _url("flows:trigger_move", tenancy, flow, trigger_id=only.pk), {"direction": "up"}
+        )
+
+        only.refresh_from_db()
+        assert only.priority == 0
+
+    def test_deleting_removes_it(self, tenancy, client_for, flow):
+        trigger = _trigger(flow)
+        client_for(tenancy.owner).post(_url("flows:trigger_delete", tenancy, flow, trigger_id=trigger.pk))
+
+        assert not Trigger.objects.for_workspace(tenancy.workspace).exists()
+
+    def test_updating_can_unbind_a_connection(self, tenancy, client_for, flow):
+        """None is a real value here — "every connection of a matching platform" —
+        so "no connection" and "leave it alone" must not share one argument."""
+        connection = connection_for(tenancy.workspace, external_id="bot-1")
+        trigger = _trigger(flow, connection=connection)
+
+        client_for(tenancy.owner).post(
+            _url("flows:trigger_update", tenancy, flow, trigger_id=trigger.pk),
+            {"keyword_text": ["help"], "keyword_mode": ["contains"], "channel_connection": ""},
+        )
+
+        trigger.refresh_from_db()
+        assert trigger.channel_connection_id is None
+
+
+@pytest.mark.django_db
+class TestPermissions:
+    @pytest.mark.parametrize("role", ["viewer", "agent"])
+    def test_a_read_only_role_cannot_write(self, tenancy, client_for, flow, role):
+        trigger = _trigger(flow)
+        client = client_for(tenancy.user_for(role))
+
+        for name, kwargs in (
+            ("flows:trigger_create", {}),
+            ("flows:trigger_update", {"trigger_id": trigger.pk}),
+            ("flows:trigger_toggle", {"trigger_id": trigger.pk}),
+            ("flows:trigger_move", {"trigger_id": trigger.pk}),
+            ("flows:trigger_delete", {"trigger_id": trigger.pk}),
+        ):
+            assert client.post(_url(name, tenancy, flow, **kwargs)).status_code == 403, name
+
+    @pytest.mark.parametrize("role", ["editor", "admin"])
+    def test_an_editing_role_can_write(self, tenancy, client_for, flow, role):
+        response = client_for(tenancy.user_for(role)).post(
+            _url("flows:trigger_create", tenancy, flow),
+            {"type": TriggerType.KEYWORD, "keyword_text": ["help"], "keyword_mode": ["contains"]},
+        )
+        assert 200 <= response.status_code < 300
+
+    def test_a_get_on_a_post_only_route_is_404_for_another_tenant(self, tenancy, other_tenancy, client_for, flow):
+        """The decorator stacking is what makes this a 404 rather than a 405 —
+        and a 405 would confirm the route and the object exist."""
+        trigger = _trigger(flow)
+        response = client_for(other_tenancy.owner).get(
+            _url("flows:trigger_delete", tenancy, flow, trigger_id=trigger.pk)
+        )
+
+        assert response.status_code == 404
+
+    def test_the_attackers_own_workspace_with_a_victims_trigger_is_404(self, tenancy, other_tenancy, client_for, flow):
+        """The case the IDOR sweep cannot reach: the middleware lets the request
+        through, so only get_scoped_object_or_404 stands in the way."""
+        trigger = _trigger(flow)
+        theirs = published_flow(other_tenancy.workspace, graph([node("a", "action", NOOP_ACTION)]), name="Theirs")
+
+        response = client_for(other_tenancy.owner).get(
+            reverse(
+                "flows:trigger_form",
+                kwargs={"workspace_id": other_tenancy.workspace.pk, "flow_id": theirs.pk},
+            )
+            + f"?trigger={trigger.pk}"
+        )
+
+        assert response.status_code == 404
+
+
+@pytest.mark.django_db
+class TestTheQrEndpoint:
+    def _ref_trigger(self, tenancy, flow):
+        connection = connection_for(tenancy.workspace, platform=Platform.MESSENGER, external_id="page-1")
+        return _trigger(flow, TriggerType.REF_URL, {"ref": "promo"}, connection=connection), connection
+
+    def test_it_returns_a_scannable_code_for_the_links_url(self, tenancy, client_for, flow):
+        trigger, connection = self._ref_trigger(tenancy, flow)
+        response = client_for(tenancy.owner).get(
+            _url("flows:trigger_qr", tenancy, flow, trigger_id=trigger.pk, connection_id=connection.pk)
+        )
+
+        assert response.status_code == 200
+        assert response["Content-Type"] == "image/svg+xml"
+        assert response.content == qr.render_svg("https://m.me/page-1?ref=promo")
+
+    def test_png_is_offered_too(self, tenancy, client_for, flow):
+        trigger, connection = self._ref_trigger(tenancy, flow)
+        response = client_for(tenancy.owner).get(
+            _url("flows:trigger_qr", tenancy, flow, trigger_id=trigger.pk, connection_id=connection.pk)
+            + "?format=png&download=1"
+        )
+
+        assert response["Content-Type"] == "image/png"
+        assert response["Content-Disposition"].startswith("attachment")
+        assert response.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_it_is_served_inert(self, tenancy, client_for, flow):
+        """An SVG opened directly is a document (SECURITY-BASELINE §9)."""
+        trigger, connection = self._ref_trigger(tenancy, flow)
+        response = client_for(tenancy.owner).get(
+            _url("flows:trigger_qr", tenancy, flow, trigger_id=trigger.pk, connection_id=connection.pk)
+        )
+
+        assert response["X-Content-Type-Options"] == "nosniff"
+        assert "default-src 'none'" in response["Content-Security-Policy"]
+
+    def test_an_unknown_format_is_a_400_not_a_404(self, tenancy, client_for, flow):
+        """A 404 here would read like a tenancy failure and send somebody hunting."""
+        trigger, connection = self._ref_trigger(tenancy, flow)
+        response = client_for(tenancy.owner).get(
+            _url("flows:trigger_qr", tenancy, flow, trigger_id=trigger.pk, connection_id=connection.pk) + "?format=bmp"
+        )
+
+        assert response.status_code == 400
+
+    def test_a_non_ref_trigger_is_404(self, tenancy, client_for, flow):
+        connection = connection_for(tenancy.workspace, platform=Platform.MESSENGER, external_id="page-1")
+        trigger = _trigger(flow, connection=connection)
+
+        response = client_for(tenancy.owner).get(
+            _url("flows:trigger_qr", tenancy, flow, trigger_id=trigger.pk, connection_id=connection.pk)
+        )
+
+        assert response.status_code == 404
+
+    def test_a_connection_the_trigger_does_not_cover_is_404(self, tenancy, client_for, flow):
+        trigger, _ = self._ref_trigger(tenancy, flow)
+        other = connection_for(tenancy.workspace, platform=Platform.MESSENGER, external_id="page-2")
+
+        response = client_for(tenancy.owner).get(
+            _url("flows:trigger_qr", tenancy, flow, trigger_id=trigger.pk, connection_id=other.pk)
+        )
+
+        assert response.status_code == 404
+
+    def test_a_connection_with_no_handle_is_404_rather_than_an_explanation(self, tenancy, client_for, flow):
+        """A connection this trigger does not cover, one whose handle is unknown,
+        and one that does not exist all look the same from outside."""
+        telegram = connection_for(tenancy.workspace, external_id="bot-1")
+        trigger = _trigger(flow, TriggerType.REF_URL, {"ref": "promo"}, connection=telegram)
+
+        response = client_for(tenancy.owner).get(
+            _url("flows:trigger_qr", tenancy, flow, trigger_id=trigger.pk, connection_id=telegram.pk)
+        )
+
+        assert response.status_code == 404
+
+    def test_a_viewer_may_read_it(self, tenancy, client_for, flow):
+        trigger, connection = self._ref_trigger(tenancy, flow)
+        response = client_for(tenancy.user_for("viewer")).get(
+            _url("flows:trigger_qr", tenancy, flow, trigger_id=trigger.pk, connection_id=connection.pk)
+        )
+
+        assert response.status_code == 200
+
+    def test_the_bytes_are_a_real_qr_of_the_link(self):
+        """Guards the assertion above: segno's own output for that URL."""
+        assert qr.render_svg("https://m.me/page-1?ref=promo") != qr.render_svg("https://m.me/page-1?ref=other")
+        assert segno.make("https://m.me/page-1?ref=promo") is not None
