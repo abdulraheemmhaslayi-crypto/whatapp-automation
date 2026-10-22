@@ -31,3 +31,16 @@ X_FRAME_OPTIONS = "DENY"
 # Load balancers and uptime probes hit /healthz over plain HTTP inside the
 # private network; without this exemption they would only ever see the 301.
 SECURE_REDIRECT_EXEMPT = [r"^healthz$"]
+
+# Allow CSRF for requests matching CSRF_TRUSTED_ORIGINS or derived from ALLOWED_HOSTS
+CSRF_TRUSTED_ORIGINS = [o.strip() for o in env.list("CSRF_TRUSTED_ORIGINS", default=[]) if o.strip()]
+if not CSRF_TRUSTED_ORIGINS:
+    for host in ALLOWED_HOSTS:
+        h = host.strip()
+        if h and h != "*" and not h.startswith("127.") and h != "localhost":
+            if h.startswith("."):
+                CSRF_TRUSTED_ORIGINS.append(f"https://*{h}")
+            elif h.startswith("*."):
+                CSRF_TRUSTED_ORIGINS.append(f"https://{h}")
+            elif not h.startswith("http"):
+                CSRF_TRUSTED_ORIGINS.append(f"https://{h}")
