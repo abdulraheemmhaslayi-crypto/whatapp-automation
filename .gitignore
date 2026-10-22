@@ -219,9 +219,9 @@ __marimo__/
 
 # --- BrightBean Chat ---
 # Django collected static files and user uploads
-staticfiles/
-media/
-test_media/
+/staticfiles/
+/media/
+/test_media/
 
 # Node
 node_modules/
