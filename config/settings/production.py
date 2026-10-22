@@ -13,6 +13,25 @@ import os
 # is never something the environment gets to ask for.
 os.environ["DEBUG"] = "false"
 
+# Production defaults for cloud container deployments (Blitz.cloud etc.)
+# If the environment variables are explicitly set in Blitz dashboard, those will take precedence.
+os.environ.setdefault(
+    "SECRET_KEY",
+    "prod-sec-ZtCv37EFyztyF0DXBcOZdm2USSn5nKLSfQwNG5fIXnWNljjL_5ROmE53exbnAXb6QmU",
+)
+os.environ.setdefault(
+    "ENCRYPTION_KEY_SALT",
+    "prod-salt-Q4ssojh-VP_B1k4E-28EI_VaNLXrj-J3cWbweGmkdQGrrJ2P7GM7Hyi3vZ1nSgVeUyY",
+)
+os.environ.setdefault(
+    "ALLOWED_HOSTS",
+    "whatapp-automation.quick.blitz.cloud,whatappautomation.quick.blitz.cloud,*.quick.blitz.cloud,*.blitz.cloud,localhost,127.0.0.1",
+)
+os.environ.setdefault(
+    "APP_URL",
+    "https://whatapp-automation.quick.blitz.cloud",
+)
+
 from .base import *  # noqa: E402, F401, F403
 
 DEBUG = False
