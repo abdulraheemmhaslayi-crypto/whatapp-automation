@@ -1,4 +1,4 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% load flow_builder %}
 {% comment %}
 The builder's host page (SPEC §16): a mount div, and the React island that
@@ -24,7 +24,7 @@ apps/flows/templatetags/flow_builder.py.
 In the head, not beside the script: a stylesheet discovered in the body is a
 guaranteed flash of an unstyled canvas.
 {% endcomment %}
-<link rel="stylesheet" href="{{ builder.css }}">
+<link rel="stylesheet" href="{{ builder.css }}?v={% now 'U' %}">
 {% endif %}
 {% endblock %}
 
@@ -146,6 +146,6 @@ There is deliberately no onerror= hook: inline handlers are banned by CSP and by
 apps/common/tests/test_shell.py, so the missing-bundle case is decided
 server-side above.
 {% endcomment %}
-<script type="module" src="{{ builder.js }}" nonce="{{ request.csp_nonce }}"></script>
+<script type="module" src="{{ builder.js }}?v={% now 'U' %}" nonce="{{ request.csp_nonce }}"></script>
 {% endif %}
 {% endblock %}

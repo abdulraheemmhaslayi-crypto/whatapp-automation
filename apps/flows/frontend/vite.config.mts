@@ -58,6 +58,7 @@ export default defineConfig({
     sourcemap: false,
 
     cssCodeSplit: false,
+    cssMinify: false,
     modulePreload: false,
     manifest: false,
 

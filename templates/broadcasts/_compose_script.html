@@ -1,32 +1,24 @@
 {% comment %}
 The composer's Alpine component.
 
-Its own file for the reason templates/contacts/_filter_bar_script.html is: it is
-a hundred lines of JavaScript and the step it belongs to is already a page. It
-is included from compose.html's alpine_components block, which base.html renders
-before Alpine's own deferred script — the window in which a global x-data
-factory has to be defined for x-data to be able to call it, and the reason it is
-NOT included from the step partial htmx swaps in.
-
-It knows the *shape* of a send_message config — blocks, buttons, quick replies —
-and nothing about which of them a platform allows. Every limit and every
-affordance is read out of `config`, which the view fills from
-apps/broadcasts/composer.py::composer_config, which reads the capability and
-policy tables. Hard-coding "WhatsApp allows three buttons" here would be the
-second capability table contract 4 exists to prevent.
-
-It also does not validate. The server does, through the flow schema
-(apps/flows/schema), which rejects unknown keys at any depth — so a hand-crafted
-POST gets the same treatment as this form, which is the only place validation can
-honestly live (SECURITY-BASELINE §7).
+Provides an advanced, enterprise-grade media composer and block builder:
+- Drag-and-drop block reordering
+- Unified media uploader with progress tracking and validation
+- Real in-browser image editor (crop, resize, rotate, flip, zoom) using HTML5 Canvas
+- Interactive video and audio players with metadata display
+- Document attachment manager with file icons and sizes
+- Embedded Media Library browser and picker modal
+- Dynamic variable insertion and live sample contact preview
 {% endcomment %}
 <script nonce="{{ request.csp_nonce }}">
-  function broadcastComposer(config, savedConfig, savedTag, savedTemplateId, savedVariables) {
-    // A stored block -> the editor's working shape, and back. The schema is a
-    // tagged union on `type`, so an editor field that does not belong to the
-    // block's kind has to be dropped on the way out: every object in the graph
-    // is closed (additionalProperties: false), and a stray `caption` on a text
-    // block would be refused by the server rather than ignored.
+  function broadcastComposer(config, savedConfig, savedTag, savedTemplateId, savedVariables, uploadUrl, pickerUrl) {
+    // Helper to identify UUIDs
+    var UUID_RE = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i;
+    function isLibraryId(value) {
+      return UUID_RE.test(String(value).trim().replace(/^urn:uuid:/i, ""));
+    }
+
+    // Packing schema conforming to flow schema (apps/flows/schema/nodes.py)
     function packBlock(block) {
       if (block.type === 'text') {
         return block.text ? { type: 'text', text: block.text } : null;
@@ -38,16 +30,9 @@ honestly live (SECURITY-BASELINE §7).
         if (block.image) card.image = block.image;
         return card;
       }
-      // image / audio / video / file — the schema wants media_id or url, one of
-      // the two, so a blank row is dropped rather than sent as an empty string.
+      // image / audio / video / file
       if (!block.media) return null;
       var media = { type: block.type };
-      // The same rule apps/flows/engine/nodes/send_message.py::_is_media_id
-      // applies: a value that parses as a UUID is a library id, anything else is
-      // a URL. Storing a pasted link under media_id makes the send node resolve
-      // it against the library, and an id that does not resolve raises rather
-      // than falling back — so the whole message is dropped for a link that was
-      // perfectly deliverable.
       if (isLibraryId(block.media)) {
         media.media_id = block.media;
       } else {
@@ -57,51 +42,847 @@ honestly live (SECURITY-BASELINE §7).
       return media;
     }
 
-    //: UUID in any of the shapes Python's uuid.UUID() accepts a string in.
-    var UUID_RE = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i;
-
-    function isLibraryId(value) {
-      return UUID_RE.test(String(value).trim().replace(/^urn:uuid:/i, ""));
-    }
-
     function packButton(button, index) {
       if (!button.label) return null;
       var id = button.id || ('b' + (index + 1));
-      if (button.action === 'url') {
+      var act = button.action || 'postback';
+      if (act === 'url') {
         return button.url ? { id: id, label: button.label, action: 'url', url: button.url } : null;
       }
-      return { id: id, label: button.label, action: 'postback' };
+      if (act === 'call') {
+        var phone = button.phone || '';
+        var tel = 'tel:' + phone.replace(/[^0-9+]/g, '');
+        return { id: id, label: button.label, action: 'url', url: tel, phone: phone };
+      }
+      if (act === 'copy_code') {
+        return { id: id, label: button.label, action: 'postback', code: button.code || '', payload: 'COPY_CODE:' + (button.code || '') };
+      }
+      if (act === 'flow') {
+        return { id: id, label: button.label, action: 'postback', flow_id: button.flow_id || '', payload: 'START_FLOW:' + (button.flow_id || id) };
+      }
+      return { id: id, label: button.label, action: 'postback', payload: button.payload || id };
+    }
+
+    function formatBytes(bytes) {
+      if (!bytes || isNaN(bytes)) return '0 B';
+      var k = 1024;
+      var sizes = ['B', 'KB', 'MB', 'GB'];
+      var i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
     }
 
     return {
       config: config,
+      uploadUrl: uploadUrl || '',
+      pickerUrl: pickerUrl || '',
       mode: savedTemplateId ? 'template' : 'message',
-      blocks: (savedConfig && savedConfig.blocks ? savedConfig.blocks : []).map(function (block) {
-        return {
-          type: block.type,
-          text: block.text || '',
-          // One editor field, either stored key — so re-opening a draft shows
-          // what was typed rather than an empty box beside a stored url.
-          media: block.media_id || block.url || '',
-          caption: block.caption || '',
-          title: block.title || '',
-          subtitle: block.subtitle || '',
-          image: block.image || '',
-        };
-      }),
-      buttons: (savedConfig && savedConfig.buttons ? savedConfig.buttons : []).map(function (button) {
-        return { id: button.id, label: button.label, action: button.action, url: button.url || '' };
-      }),
       tag: savedTag || '',
       templateId: savedTemplateId || '',
       variables: savedVariables && !Array.isArray(savedVariables) ? savedVariables : {},
 
-      addBlock: function (kind) {
-        this.blocks.push({ type: kind, text: '', media: '', caption: '', title: '', subtitle: '', image: '' });
+      // Blocks collection
+      blocks: (savedConfig && savedConfig.blocks ? savedConfig.blocks : []).map(function (b) {
+        var mediaVal = b.media_id || b.url || '';
+        return {
+          id: 'blk_' + Math.random().toString(36).substr(2, 9),
+          type: b.type,
+          text: b.text || '',
+          media: mediaVal,
+          caption: b.caption || '',
+          title: b.title || '',
+          subtitle: b.subtitle || '',
+          image: b.image || '',
+          // UI state
+          collapsed: false,
+          preview_url: (!isLibraryId(mediaVal) && mediaVal) ? mediaVal : '',
+          filename: '',
+          filesize: 0,
+          filesizeFormatted: '',
+          mime: '',
+          width: 0,
+          height: 0,
+          duration: 0,
+          durationFormatted: '',
+          uploading: false,
+          uploadProgress: 0,
+          uploadError: '',
+          showUrlInput: false,
+          customUrl: '',
+        };
+      }),
+
+      // Buttons collection
+      buttons: (savedConfig && savedConfig.buttons ? savedConfig.buttons : []).map(function (btn) {
+        return {
+          id: btn.id || ('b_' + Math.random().toString(36).substr(2, 7)),
+          label: btn.label || '',
+          action: btn.action || 'postback',
+          url: btn.url || '',
+          phone: btn.phone || '',
+          code: btn.code || '',
+          flow_id: btn.flow_id || '',
+          payload: btn.payload || '',
+        };
+      }),
+
+      // Drag and drop state
+      draggedBlockIndex: null,
+
+      // Live Simulator & Platform State
+      previewPlatform: 'whatsapp',
+      previewSampleContact: true,
+      showFullscreenSimulator: false,
+      previewTime: (new Date()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      simulatedToast: '',
+      simulatedToastTimer: null,
+
+      // Variable Picker State
+      showVariableModal: false,
+      variablePickerTarget: null, // { index: 0, field: 'text' | 'caption' }
+      variableSearchQuery: '',
+      lastCaret: null,
+      activeEmojiPickerIdx: null,
+      availableVariables: [
+        { token: '{' + '{ contact.name }' + '}', label: 'Full Name', example: 'Rahul Sharma', desc: 'Customer complete display name' },
+        { token: '{' + '{ contact.first_name }' + '}', label: 'First Name', example: 'Rahul', desc: 'Customer given first name' },
+        { token: '{' + '{ contact.last_name }' + '}', label: 'Last Name', example: 'Sharma', desc: 'Customer family name' },
+        { token: '{' + '{ contact.phone }' + '}', label: 'Phone Number', example: '+91 98765 43210', desc: 'Normalized mobile phone' },
+        { token: '{' + '{ contact.email }' + '}', label: 'Email Address', example: 'rahul@example.com', desc: 'Primary contact email' },
+        { token: '{' + '{ contact.company }' + '}', label: 'Company', example: 'Acme Retail', desc: 'Customer company or business' },
+      ],
+
+      // Media Library Modal State
+      showMediaLibraryModal: false,
+      mediaLibraryTargetIndex: null, // index or -1 for new block
+      mediaLibraryItems: [],
+      mediaLibraryLoading: false,
+      mediaLibraryQuery: '',
+      mediaLibraryKind: '',
+
+      // Image Editor Modal State
+      showImageEditorModal: false,
+      editingImage: {
+        blockIndex: null,
+        sourceUrl: '',
+        imgElement: null,
+        zoom: 1,
+        rotation: 0,
+        flipH: 1,
+        flipV: 1,
+        aspectRatio: 'free',
+        naturalWidth: 0,
+        naturalHeight: 0,
       },
-      addButton: function () {
+
+      init: function () {
+        var self = this;
+        // If there are no blocks, initialize with one text block
+        if (!this.blocks.length) {
+          this.addBlock('text');
+        }
+
+        // Hydrate existing media assets details from picker API
+        if (this.pickerUrl) {
+          fetch(this.pickerUrl + '?limit=100', { headers: { 'Accept': 'application/json' } })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+              if (!data || !data.results) return;
+              var map = {};
+              data.results.forEach(function (item) { map[item.id] = item; });
+              self.blocks.forEach(function (block) {
+                if (block.media && map[block.media]) {
+                  var item = map[block.media];
+                  block.preview_url = item.url;
+                  block.filename = item.filename;
+                  block.filesize = item.size;
+                  block.filesizeFormatted = formatBytes(item.size);
+                  block.mime = item.mime;
+                  block.width = item.width || 0;
+                  block.height = item.height || 0;
+                }
+              });
+            })
+            .catch(function () {});
+        }
+
+        // Global paste listener for files / images
+        document.addEventListener('paste', function (e) {
+          if (!e.clipboardData || !e.clipboardData.files || !e.clipboardData.files.length) return;
+          var file = e.clipboardData.files[0];
+          var fileType = file.type || '';
+          var targetKind = 'file';
+          if (fileType.indexOf('image/') === 0) targetKind = 'image';
+          else if (fileType.indexOf('video/') === 0) targetKind = 'video';
+          else if (fileType.indexOf('audio/') === 0) targetKind = 'audio';
+
+          // If current empty block of matching kind exists, upload to it; otherwise add new block
+          var emptyIdx = self.blocks.findIndex(function (b) { return b.type === targetKind && !b.media; });
+          if (emptyIdx === -1) {
+            self.addBlock(targetKind);
+            emptyIdx = self.blocks.length - 1;
+          }
+          self.uploadFileForBlock(file, emptyIdx);
+        });
+      },
+
+      getCsrfToken: function () {
+        var tokenInput = document.querySelector('input[name="csrfmiddlewaretoken"]');
+        return tokenInput ? tokenInput.value : '';
+      },
+
+      formatFileSize: function (bytes) {
+        return formatBytes(bytes);
+      },
+
+      // ── Block Operations ──────────────────────────────────────────
+      addBlock: function (kind, extra) {
+        var newBlock = {
+          id: 'blk_' + Math.random().toString(36).substr(2, 9),
+          type: kind,
+          text: '',
+          media: '',
+          caption: '',
+          title: '',
+          subtitle: '',
+          image: '',
+          collapsed: false,
+          preview_url: '',
+          filename: '',
+          filesize: 0,
+          filesizeFormatted: '',
+          mime: '',
+          width: 0,
+          height: 0,
+          duration: 0,
+          durationFormatted: '',
+          uploading: false,
+          uploadProgress: 0,
+          uploadError: '',
+          showUrlInput: false,
+          customUrl: '',
+        };
+        if (extra && typeof extra === 'object') {
+          for (var k in extra) {
+            newBlock[k] = extra[k];
+          }
+        }
+        this.blocks.push(newBlock);
+        this.announceText();
+      },
+
+      removeBlock: function (index) {
+        this.blocks.splice(index, 1);
+        if (!this.blocks.length) {
+          this.addBlock('text');
+        }
+        this.announceText();
+      },
+
+      duplicateBlock: function (index) {
+        var block = this.blocks[index];
+        if (!block) return;
+        var clone = JSON.parse(JSON.stringify(block));
+        clone.id = 'blk_' + Math.random().toString(36).substr(2, 9);
+        this.blocks.splice(index + 1, 0, clone);
+        this.announceText();
+      },
+
+      moveBlock: function (index, dir) {
+        var target = index + dir;
+        if (target < 0 || target >= this.blocks.length) return;
+        var item = this.blocks.splice(index, 1)[0];
+        this.blocks.splice(target, 0, item);
+        this.announceText();
+      },
+
+      toggleCollapse: function (index) {
+        if (this.blocks[index]) {
+          this.blocks[index].collapsed = !this.blocks[index].collapsed;
+        }
+      },
+
+      // Drag and Drop block reordering
+      onDragStart: function (e, index) {
+        this.draggedBlockIndex = index;
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', index);
+      },
+      onDragOver: function (e, index) {
+        if (this.draggedBlockIndex === null || this.draggedBlockIndex === index) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+      },
+      onDrop: function (e, targetIndex) {
+        if (this.draggedBlockIndex === null || this.draggedBlockIndex === targetIndex) return;
+        var moved = this.blocks.splice(this.draggedBlockIndex, 1)[0];
+        this.blocks.splice(targetIndex, 0, moved);
+        this.draggedBlockIndex = null;
+        this.announceText();
+      },
+      onDragEnd: function (e) {
+        this.draggedBlockIndex = null;
+      },
+
+      // ── Buttons Management & Presets ─────────────────────────────
+      addButton: function (action, label, extra) {
         if (this.buttons.length >= this.config.max_buttons) return;
-        this.buttons.push({ id: '', label: '', action: 'postback', url: '' });
+        var btn = {
+          id: 'btn_' + Math.random().toString(36).substr(2, 7),
+          label: label || '',
+          action: action || 'postback',
+          url: '',
+          phone: '',
+          code: '',
+          flow_id: '',
+          payload: '',
+        };
+        if (extra && typeof extra === 'object') {
+          for (var k in extra) {
+            btn[k] = extra[k];
+          }
+        }
+        this.buttons.push(btn);
+      },
+
+      removeButton: function (index) {
+        this.buttons.splice(index, 1);
+      },
+
+      moveButton: function (index, dir) {
+        var target = index + dir;
+        if (target < 0 || target >= this.buttons.length) return;
+        var item = this.buttons.splice(index, 1)[0];
+        this.buttons.splice(target, 0, item);
+      },
+
+      insertButtonUrlToken: function (button, tokenKey) {
+        if (!button) return;
+        var token = '{' + '{ contact.' + tokenKey + ' }' + '}';
+        button.url = (button.url || '') + (button.url ? '&' : '?') + tokenKey + '=' + token;
+      },
+
+      simulateButtonClick: function (btn) {
+        if (!btn) return;
+        var msg = '';
+        if (btn.action === 'call') {
+          msg = '📞 Calling ' + (btn.phone || '+91 98765 43210') + '...';
+        } else if (btn.action === 'url') {
+          msg = '🔗 Navigating to ' + (btn.url || 'https://website.com');
+        } else if (btn.action === 'copy_code') {
+          msg = '🏷️ Copied Coupon: "' + (btn.code || 'DISCOUNT') + '"';
+        } else if (btn.action === 'flow') {
+          msg = '⚡ Launching Flow: "' + (btn.flow_id || 'Bot Flow') + '"';
+        } else {
+          msg = '💬 Customer replied: "' + (btn.label || 'Action') + '"';
+        }
+        this.simulatedToast = msg;
+        if (this.simulatedToastTimer) clearTimeout(this.simulatedToastTimer);
+        var self = this;
+        this.simulatedToastTimer = setTimeout(function () {
+          self.simulatedToast = '';
+        }, 2500);
+      },
+
+      // ── Unified Media Upload Handler ──────────────────────────────
+      uploadFileForBlock: function (file, blockIndex) {
+        var block = this.blocks[blockIndex];
+        if (!block || !file) return;
+
+        var kind = block.type;
+        var maxSizes = {
+          image: 16 * 1024 * 1024,
+          video: 16 * 1024 * 1024,
+          audio: 16 * 1024 * 1024,
+          file: 100 * 1024 * 1024,
+        };
+        var max = maxSizes[kind] || (100 * 1024 * 1024);
+
+        if (file.size > max) {
+          block.uploadError = 'File exceeds maximum limit of ' + formatBytes(max) + '.';
+          return;
+        }
+
+        // Immediate local preview via Blob URL
+        var objectUrl = URL.createObjectURL(file);
+        block.preview_url = objectUrl;
+        block.filename = file.name;
+        block.filesize = file.size;
+        block.filesizeFormatted = formatBytes(file.size);
+        block.mime = file.type;
+        block.uploading = true;
+        block.uploadProgress = 0;
+        block.uploadError = '';
+
+        // Extract dimensions / metadata
+        if (kind === 'image') {
+          var img = new Image();
+          img.onload = function () {
+            block.width = img.naturalWidth;
+            block.height = img.naturalHeight;
+          };
+          img.src = objectUrl;
+        } else if (kind === 'video' || kind === 'audio') {
+          var mediaEl = document.createElement(kind);
+          mediaEl.onloadedmetadata = function () {
+            block.duration = Math.round(mediaEl.duration);
+            var m = Math.floor(mediaEl.duration / 60);
+            var s = Math.floor(mediaEl.duration % 60);
+            block.durationFormatted = m + ':' + (s < 10 ? '0' : '') + s;
+            if (kind === 'video') {
+              block.width = mediaEl.videoWidth;
+              block.height = mediaEl.videoHeight;
+            }
+          };
+          mediaEl.src = objectUrl;
+        }
+
+        // Real Backend Upload via XHR
+        var formData = new FormData();
+        formData.append('files', file);
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', this.uploadUrl, true);
+        var csrf = this.getCsrfToken();
+        if (csrf) xhr.setRequestHeader('X-CSRFToken', csrf);
+
+        xhr.upload.onprogress = function (e) {
+          if (e.lengthComputable) {
+            block.uploadProgress = Math.round((e.loaded / e.total) * 100);
+          }
+        };
+
+        var self = this;
+        xhr.onload = function () {
+          block.uploading = false;
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              var res = JSON.parse(xhr.responseText);
+              if (res.assets && res.assets.length > 0) {
+                var asset = res.assets[0];
+                block.media = asset.id;
+                block.preview_url = asset.url;
+                block.filename = asset.filename;
+                block.filesize = asset.size;
+                block.filesizeFormatted = formatBytes(asset.size);
+                block.width = asset.width || block.width;
+                block.height = asset.height || block.height;
+              } else if (res.uploaded && res.uploaded.length > 0) {
+                block.media = res.uploaded[0];
+              }
+              if (res.errors && res.errors.length > 0) {
+                block.uploadError = res.errors[0].error || 'Upload error.';
+              }
+            } catch (err) {}
+            self.announceText();
+          } else {
+            block.uploadError = 'Upload failed with status ' + xhr.status + '. Please retry.';
+          }
+        };
+
+        xhr.onerror = function () {
+          block.uploading = false;
+          block.uploadError = 'Network error while uploading. Please check your connection.';
+        };
+
+        xhr.send(formData);
+      },
+
+      onFileDropped: function (e, blockIndex) {
+        e.preventDefault();
+        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+          this.uploadFileForBlock(e.dataTransfer.files[0], blockIndex);
+        }
+      },
+
+      onFileInputChange: function (e, blockIndex) {
+        if (e.target && e.target.files && e.target.files.length) {
+          this.uploadFileForBlock(e.target.files[0], blockIndex);
+        }
+      },
+
+      applyCustomUrl: function (blockIndex) {
+        var block = this.blocks[blockIndex];
+        if (!block || !block.customUrl) return;
+        block.media = block.customUrl.trim();
+        block.preview_url = block.customUrl.trim();
+        block.filename = block.customUrl.split('/').pop().split('?')[0] || 'Remote file';
+        block.showUrlInput = false;
+        block.uploadError = '';
+        this.announceText();
+      },
+
+      clearBlockMedia: function (blockIndex) {
+        var block = this.blocks[blockIndex];
+        if (!block) return;
+        block.media = '';
+        block.preview_url = '';
+        block.filename = '';
+        block.filesize = 0;
+        block.filesizeFormatted = '';
+        block.uploadError = '';
+        block.uploading = false;
+        this.announceText();
+      },
+
+      // ── Media Library Browser Modal ───────────────────────────────
+      openMediaLibraryModal: function (targetBlockIndex, kind) {
+        this.mediaLibraryTargetIndex = typeof targetBlockIndex === 'number' ? targetBlockIndex : -1;
+        this.mediaLibraryKind = kind || '';
+        this.mediaLibraryQuery = '';
+        this.showMediaLibraryModal = true;
+        this.loadMediaLibraryItems();
+      },
+
+      loadMediaLibraryItems: function () {
+        this.mediaLibraryLoading = true;
+        var url = this.pickerUrl + '?limit=60';
+        if (this.mediaLibraryKind) url += '&kind=' + encodeURIComponent(this.mediaLibraryKind);
+        if (this.mediaLibraryQuery) url += '&q=' + encodeURIComponent(this.mediaLibraryQuery);
+
+        var self = this;
+        fetch(url, { headers: { 'Accept': 'application/json' } })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            self.mediaLibraryItems = (data && data.results) ? data.results : [];
+            self.mediaLibraryLoading = false;
+          })
+          .catch(function () {
+            self.mediaLibraryLoading = false;
+          });
+      },
+
+      selectMediaAsset: function (asset) {
+        if (this.mediaLibraryTargetIndex !== null && this.mediaLibraryTargetIndex >= 0) {
+          var block = this.blocks[this.mediaLibraryTargetIndex];
+          if (block) {
+            block.media = asset.id;
+            block.preview_url = asset.url;
+            block.filename = asset.filename;
+            block.filesize = asset.size;
+            block.filesizeFormatted = formatBytes(asset.size);
+            block.mime = asset.mime;
+            block.width = asset.width || 0;
+            block.height = asset.height || 0;
+            block.uploadError = '';
+          }
+        } else {
+          // Add as new block matching kind
+          this.addBlock(asset.kind || 'image', {
+            media: asset.id,
+            preview_url: asset.url,
+            filename: asset.filename,
+            filesize: asset.size,
+            filesizeFormatted: formatBytes(asset.size),
+            mime: asset.mime,
+            width: asset.width || 0,
+            height: asset.height || 0,
+          });
+        }
+        this.showMediaLibraryModal = false;
+        this.announceText();
+      },
+
+      uploadFromLibraryModal: function (e) {
+        if (!e.target || !e.target.files || !e.target.files.length) return;
+        var file = e.target.files[0];
+        var formData = new FormData();
+        formData.append('files', file);
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', this.uploadUrl, true);
+        var csrf = this.getCsrfToken();
+        if (csrf) xhr.setRequestHeader('X-CSRFToken', csrf);
+
+        var self = this;
+        self.mediaLibraryLoading = true;
+        xhr.onload = function () {
+          self.loadMediaLibraryItems();
+        };
+        xhr.send(formData);
+      },
+
+      // ── Interactive In-Browser Canvas Image Editor ─────────────────
+      openImageEditor: function (blockIndex) {
+        var block = this.blocks[blockIndex];
+        if (!block || !block.preview_url) return;
+
+        this.editingImage.blockIndex = blockIndex;
+        this.editingImage.sourceUrl = block.preview_url;
+        this.editingImage.zoom = 1;
+        this.editingImage.rotation = 0;
+        this.editingImage.flipH = 1;
+        this.editingImage.flipV = 1;
+        this.editingImage.aspectRatio = 'free';
+
+        var img = new Image();
+        img.crossOrigin = 'anonymous';
+        var self = this;
+        img.onload = function () {
+          self.editingImage.imgElement = img;
+          self.editingImage.naturalWidth = img.naturalWidth;
+          self.editingImage.naturalHeight = img.naturalHeight;
+          self.showImageEditorModal = true;
+          // Defer canvas draw
+          setTimeout(function () { self.renderEditorCanvas(); }, 60);
+        };
+        img.src = block.preview_url;
+      },
+
+      rotateImage: function (deg) {
+        this.editingImage.rotation = (this.editingImage.rotation + deg + 360) % 360;
+        this.renderEditorCanvas();
+      },
+
+      toggleFlipH: function () {
+        this.editingImage.flipH = this.editingImage.flipH === 1 ? -1 : 1;
+        this.renderEditorCanvas();
+      },
+
+      toggleFlipV: function () {
+        this.editingImage.flipV = this.editingImage.flipV === 1 ? -1 : 1;
+        this.renderEditorCanvas();
+      },
+
+      setAspectRatio: function (ratio) {
+        this.editingImage.aspectRatio = ratio;
+        this.renderEditorCanvas();
+      },
+
+      renderEditorCanvas: function () {
+        var canvas = document.getElementById('image-editor-canvas');
+        if (!canvas || !this.editingImage.imgElement) return;
+
+        var ctx = canvas.getContext('2d');
+        var img = this.editingImage.imgElement;
+        var rot = this.editingImage.rotation;
+        var isSwap = rot === 90 || rot === 270;
+
+        var baseW = isSwap ? img.naturalHeight : img.naturalWidth;
+        var baseH = isSwap ? img.naturalWidth : img.naturalHeight;
+
+        // Apply aspect ratio crop bounds if specified
+        var targetW = baseW;
+        var targetH = baseH;
+        if (this.editingImage.aspectRatio === '1:1') {
+          var s = Math.min(baseW, baseH);
+          targetW = s;
+          targetH = s;
+        } else if (this.editingImage.aspectRatio === '4:5') {
+          if (baseW / baseH > 4 / 5) {
+            targetW = Math.round(baseH * (4 / 5));
+          } else {
+            targetH = Math.round(baseW * (5 / 4));
+          }
+        } else if (this.editingImage.aspectRatio === '16:9') {
+          if (baseW / baseH > 16 / 9) {
+            targetW = Math.round(baseH * (16 / 9));
+          } else {
+            targetH = Math.round(baseW * (9 / 16));
+          }
+        }
+
+        // Max preview canvas dimensions
+        var maxCanvasDim = 540;
+        var scale = Math.min(1, maxCanvasDim / Math.max(targetW, targetH));
+        canvas.width = Math.round(targetW * scale);
+        canvas.height = Math.round(targetH * scale);
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.save();
+
+        // Center transform
+        ctx.translate(canvas.width / 2, canvas.height / 2);
+        ctx.scale(this.editingImage.flipH, this.editingImage.flipV);
+        ctx.rotate((rot * Math.PI) / 180);
+        ctx.scale(this.editingImage.zoom, this.editingImage.zoom);
+
+        var drawW = (img.naturalWidth * scale);
+        var drawH = (img.naturalHeight * scale);
+        ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
+
+        ctx.restore();
+      },
+
+      applyImageEdits: function () {
+        var canvas = document.getElementById('image-editor-canvas');
+        if (!canvas) return;
+
+        var blockIndex = this.editingImage.blockIndex;
+        var block = this.blocks[blockIndex];
+        if (!block) return;
+
+        var self = this;
+        canvas.toBlob(function (blob) {
+          if (!blob) return;
+          var fname = 'edited_' + (block.filename || 'image.png').replace(/\.[^/.]+$/, '') + '.png';
+          var file = new File([blob], fname, { type: 'image/png' });
+          self.uploadFileForBlock(file, blockIndex);
+          self.showImageEditorModal = false;
+        }, 'image/png');
+      },
+
+      // ── Caret Tracking & Variable Insertion ────────────────────────
+      recordCaret: function (index, event) {
+        if (!event || !event.target) return;
+        this.lastCaret = {
+          index: index,
+          start: event.target.selectionStart,
+          end: event.target.selectionEnd,
+        };
+      },
+
+      openVariablePicker: function (index, field) {
+        this.variablePickerTarget = { index: (typeof index === 'number' ? index : 0), field: field || 'text' };
+        this.variableSearchQuery = '';
+        this.showVariableModal = true;
+      },
+
+      insertToken: function (token, blockIndex) {
+        if (!token) return;
+        var idx = (typeof blockIndex === 'number') ? blockIndex : (this.variablePickerTarget ? this.variablePickerTarget.index : 0);
+        var block = this.blocks[idx];
+        if (!block) {
+          if (this.blocks.length > 0) {
+            block = this.blocks[0];
+            idx = 0;
+          } else {
+            return;
+          }
+        }
+
+        var field = (this.variablePickerTarget && this.variablePickerTarget.field === 'caption') ? 'caption' : 'text';
+        var textarea = document.getElementById('block_textarea_' + idx);
+
+        if (textarea && field === 'text') {
+          var start = (typeof textarea.selectionStart === 'number' && textarea.selectionStart >= 0)
+                      ? textarea.selectionStart
+                      : ((this.lastCaret && this.lastCaret.index === idx) ? this.lastCaret.start : (block.text || '').length);
+          var end = (typeof textarea.selectionEnd === 'number' && textarea.selectionEnd >= 0)
+                    ? textarea.selectionEnd
+                    : ((this.lastCaret && this.lastCaret.index === idx) ? this.lastCaret.end : start);
+          var current = block.text || '';
+          block.text = current.substring(0, start) + token + current.substring(end);
+          
+          this.$nextTick(function () {
+            try {
+              textarea.focus();
+              var newPos = start + token.length;
+              textarea.setSelectionRange(newPos, newPos);
+            } catch (e) {}
+          });
+        } else {
+          block[field] = (block[field] || '') + (block[field] ? ' ' : '') + token;
+        }
+
+        this.showVariableModal = false;
+        this.announceText();
+      },
+
+      insertQuickVariable: function (varKey, blockIndex) {
+        var token = '{' + '{ contact.' + varKey + ' }' + '}';
+        this.insertToken(token, blockIndex);
+      },
+
+      insertVariable: function (token) {
+        var idx = this.variablePickerTarget ? this.variablePickerTarget.index : 0;
+        this.insertToken(token, idx);
+      },
+
+      toggleEmojiPicker: function (index) {
+        this.activeEmojiPickerIdx = (this.activeEmojiPickerIdx === index ? null : index);
+      },
+
+      insertEmoji: function (emoji, blockIndex) {
+        this.insertToken(emoji, blockIndex);
+        this.activeEmojiPickerIdx = null;
+      },
+
+      applyFormat: function (char, blockIndex) {
+        var idx = typeof blockIndex === 'number' ? blockIndex : 0;
+        var block = this.blocks[idx] || this.blocks[0];
+        if (!block) return;
+
+        var textarea = document.getElementById('block_textarea_' + idx);
+        if (textarea) {
+          var start = textarea.selectionStart;
+          var end = textarea.selectionEnd;
+          var current = block.text || '';
+          var selected = current.substring(start, end);
+          var placeholder = char === '```' ? 'code' : 'text';
+          var textToWrap = selected.length > 0 ? selected : placeholder;
+          var formatted = char + textToWrap + char;
+
+          block.text = current.substring(0, start) + formatted + current.substring(end);
+          
+          this.$nextTick(function () {
+            try {
+              textarea.focus();
+              if (selected.length > 0) {
+                textarea.setSelectionRange(start, start + formatted.length);
+              } else {
+                textarea.setSelectionRange(start + char.length, start + char.length + placeholder.length);
+              }
+            } catch (e) {}
+          });
+        } else {
+          block.text = (block.text || '') + char + 'text' + char;
+        }
+        this.announceText();
+      },
+
+      copyBlockText: function (blockIndex) {
+        var idx = typeof blockIndex === 'number' ? blockIndex : 0;
+        var block = this.blocks[idx] || this.blocks[0];
+        if (block && block.text) {
+          var textToCopy = block.text;
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(textToCopy);
+          } else {
+            var ta = document.createElement('textarea');
+            ta.value = textToCopy;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+          }
+          block._copied = true;
+          setTimeout(function () {
+            block._copied = false;
+          }, 1800);
+        }
+      },
+
+      insertLinkPrompt: function (blockIndex) {
+        var idx = typeof blockIndex === 'number' ? blockIndex : 0;
+        var url = prompt('Enter link URL (e.g. https://example.com):', 'https://');
+        if (url && url.trim() && url.trim() !== 'https://') {
+          this.insertToken(url.trim(), idx);
+        }
+      },
+
+      // ── Live Simulator Formatting & Getters ───────────────────────
+      formatTextPreview: function (raw) {
+        if (!raw) return '<span style="color: #94a3b8; font-style: italic;">Type your message text here...</span>';
+        if (this.previewSampleContact) {
+          raw = raw.replace(/\{\{\s*contact\.name\s*\}\}/gi, 'Rahul Sharma')
+                   .replace(/\{\{\s*contact\.first_name\s*\}\}/gi, 'Rahul')
+                   .replace(/\{\{\s*contact\.last_name\s*\}\}/gi, 'Sharma')
+                   .replace(/\{\{\s*contact\.phone\s*\}\}/gi, '+91 98765 43210')
+                   .replace(/\{\{\s*contact\.email\s*\}\}/gi, 'rahul@example.com')
+                   .replace(/\{\{\s*contact\.company\s*\}\}/gi, 'Acme Retail');
+        }
+        var d = document.createElement('div');
+        d.textContent = raw;
+        var s = d.innerHTML;
+        s = s.replace(/\*(.*?)\*/g, '<strong>$1</strong>');
+        s = s.replace(/_(.*?)_/g, '<em>$1</em>');
+        s = s.replace(/~(.*?)~/g, '<del class="opacity-75">$1</del>');
+        s = s.replace(/```(.*?)```/g, '<code style="background: rgba(0,0,0,0.08); padding: 1px 4px; border-radius: 4px; font-family: monospace; font-size: 11px;">$1</code>');
+        return s.replace(/\n/g, '<br>');
+      },
+
+      get formattedPreviewHtml() {
+        return this.formatTextPreview(this.messageText);
       },
 
       get selectedTemplate() {
@@ -116,22 +897,14 @@ honestly live (SECURITY-BASELINE §7).
         if (!hint.configured) {
           return 'No per-message price is set for this workspace yet.';
         }
-        // The composer multiplies; apps/channels/segments.py and the cost-hint
-        // table both deliberately stop short of a price times a count.
         return 'About ' + hint[template.category] + ' ' + hint.currency + ' per message.';
       },
 
-      // SPEC §6.6's segment-count preview is NOT computed here. The arithmetic
-      // lives in apps/channels/segments.py, which is pure and is the only
-      // implementation, and L5-D already exposes it as an endpoint written for
-      // this composer by name. A JavaScript approximation of GSM-7 versus UCS-2
-      // would be a second counter that disagrees with the one the send is
-      // costed against — so this only publishes the text and lets the server
-      // answer.
       announceText: function () {
         window.broadcastMessageText = function () { return this.messageText; }.bind(this);
         document.body.dispatchEvent(new Event('segments-changed'));
       },
+
       get messageText() {
         return this.blocks.filter(function (b) { return b.type === 'text'; })
                           .map(function (b) { return b.text || ''; }).join('\n');
@@ -144,19 +917,14 @@ honestly live (SECURITY-BASELINE §7).
         if (buttons.length) out.buttons = buttons;
         return JSON.stringify(out);
       },
+
       get serialisedVariables() {
         return JSON.stringify(this.variables || {});
       },
     };
   }
 
-  // "Save and exit" in the editor bar. Each step only saves when it is
-  // continued past, so a plain link would drop whatever was changed on the
-  // step on screen. Instead: if the step's form (the one marked
-  // data-wizard-save) differs from what it loaded with, submit it with exit=1
-  // and let the server save it and send us to the list — or, if it refuses,
-  // re-render the step with the reason, so nobody leaves thinking an edit was
-  // kept when it was not. Unchanged, it is just the link.
+  // "Save and exit" logic
   function broadcastWizardExit() {
     function saveForm() {
       return document.querySelector('#broadcast-wizard form[data-wizard-save]');
@@ -165,7 +933,6 @@ honestly live (SECURITY-BASELINE §7).
       return new URLSearchParams(new FormData(form)).toString();
     }
     function snapshot() {
-      // A frame later, so Alpine has bound the step's :value inputs first.
       window.requestAnimationFrame(function () {
         var form = saveForm();
         if (form) form.dataset.loadedState = stateOf(form);

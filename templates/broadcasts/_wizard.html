@@ -15,28 +15,38 @@ parameter. The four includes are spelled out for the same reason.
   `step_labels` rather than the raw names: the fourth step is stored as
   "content" and read as "Message".
 {% endcomment %}
-<ol class="stepper mb-6" aria-label="Composer steps">
-    {% for row in step_rows %}
-    {% if not forloop.first %}<li class="stepper-link{% if row.done %} is-done{% endif %}" aria-hidden="true"></li>{% endif %}
-    <li>
-    <button type="button"
-            class="stepper-step{% if row.current %} is-current{% elif row.done %} is-done{% endif %}"
-            hx-get="{% url 'broadcasts:wizard' workspace_id=request.workspace.id broadcast_id=broadcast.id %}?step={{ row.name }}"
-            hx-target="#broadcast-wizard"
-            hx-swap="innerHTML"
-            {% if row.current %}aria-current="step"{% endif %}>
-        <span class="stepper-index">
+<nav aria-label="Composer steps" style="margin-bottom: 24px;">
+    <div style="display: flex; align-items: center; justify-content: space-between; max-width: 900px; margin: 0 auto; width: 100%;">
+        {% for row in step_rows %}
+        <button type="button"
+                hx-get="{% url 'broadcasts:wizard' workspace_id=request.workspace.id broadcast_id=broadcast.id %}?step={{ row.name }}"
+                hx-target="#broadcast-wizard"
+                hx-swap="innerHTML"
+                style="display: flex; align-items: center; gap: 8px; background: transparent; border: none; cursor: pointer; padding: 4px 6px; text-decoration: none;">
             {% if row.done and not row.current %}
-            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
-            <span class="sr-only">Done:</span>
-            {% else %}{{ row.index }}{% endif %}
-        </span>
-        <span class="stepper-label">{{ row.label }}</span>
-    </button>
-    </li>
-    {% endfor %}
-</ol>
+            <span style="width: 22px; height: 22px; border-radius: 9999px; background: #22c55e; color: #ffffff; display: flex; align-items: center; justify-content: center;">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+            </span>
+            <span style="font-size: 13px; font-weight: 600; color: #0f172a;">{{ row.label }}</span>
+            {% elif row.current %}
+            <span style="width: 22px; height: 22px; border-radius: 9999px; background: #2563eb; color: #ffffff; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700;">{{ row.index }}</span>
+            <span style="font-size: 13px; font-weight: 700; color: #0f172a;">{{ row.label }}</span>
+            {% else %}
+            <span style="width: 22px; height: 22px; border-radius: 9999px; background: #f1f5f9; border: 1px solid #cbd5e1; color: #64748b; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600;">{{ row.index }}</span>
+            <span style="font-size: 13px; font-weight: 500; color: #64748b;">{{ row.label }}</span>
+            {% endif %}
+        </button>
 
+        {% if not forloop.last %}
+        <div style="flex: 1; height: 2px; margin: 0 10px; background: {% if row.done and not row.current %}#22c55e{% elif row.current %}#cbd5e1{% else %}#e2e8f0{% endif %}; border-radius: 9999px;"></div>
+        {% endif %}
+        {% endfor %}
+    </div>
+</nav>
+
+{% if step == "content" %}
+  {% include "broadcasts/_step_content.html" %}
+{% else %}
 <div class="wizard-grid">
 <div class="wizard-main">
 {% if error %}
@@ -45,7 +55,6 @@ parameter. The four includes are spelled out for the same reason.
 
 {% if step == "channel" %}{% include "broadcasts/_step_channel.html" %}
 {% elif step == "audience" %}{% include "broadcasts/_step_audience.html" %}
-{% elif step == "content" %}{% include "broadcasts/_step_content.html" %}
 {% elif step == "schedule" %}{% include "broadcasts/_step_schedule.html" %}
 {% else %}{% include "broadcasts/_step_review.html" %}
 {% endif %}
@@ -92,3 +101,4 @@ parameter. The four includes are spelled out for the same reason.
     </form>
 </aside>
 </div>
+{% endif %}

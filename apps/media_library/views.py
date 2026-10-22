@@ -23,7 +23,6 @@ from django.http.response import HttpResponseBase
 from django.shortcuts import render
 from django.urls import reverse
 from django.views.decorators.http import require_GET, require_POST
-
 from apps.common.htmx import toast_response
 from apps.common.shortcuts import get_scoped_object_or_404
 from apps.media_library import services
@@ -31,7 +30,7 @@ from apps.media_library.delivery import delivery_response, read_token
 from apps.media_library.filters import ROOT_FOLDER, filter_assets
 from apps.media_library.mimes import MediaKind, UnsupportedMediaError, accepted_upload_types
 from apps.media_library.models import MediaAsset, MediaFolder
-from apps.media_library.picker import DEFAULT_LIMIT, picker_payload
+from apps.media_library.picker import DEFAULT_LIMIT, picker_payload, serialize_asset
 from apps.media_library.quotas import QuotaExceededError, used_bytes, workspace_quota_bytes
 from apps.members.decorators import require_permission
 from apps.members.requests import WorkspaceRequest
@@ -246,7 +245,14 @@ def upload(request: WorkspaceRequest, workspace_id: str) -> HttpResponse:
         return _with_trigger(response, _toast(tone, title, body))
 
     status = 200 if created else 400
-    return JsonResponse({"uploaded": [str(a.pk) for a in created], "errors": errors}, status=status)
+    return JsonResponse(
+        {
+            "uploaded": [str(a.pk) for a in created],
+            "assets": [serialize_asset(a) for a in created],
+            "errors": errors,
+        },
+        status=status,
+    )
 
 
 # ---------------------------------------------------------------------------

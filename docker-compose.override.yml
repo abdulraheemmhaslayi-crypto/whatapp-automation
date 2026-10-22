@@ -38,8 +38,7 @@ services:
       # rebuild cannot reach the container: whatever `npm run build:js` writes
       # into the checkout is hidden behind the volume's copy. The `builder`
       # service below is what writes into it, exactly as `tailwind` does for
-      # the stylesheet.
-      - builder_dist:/app/apps/flows/static/flows/builder
+      # - builder_dist:/app/apps/flows/static/flows/builder
 
   # The island's watcher. It exists for the same reason the volume above does:
   # the named volume shadows the bind-mount, so a host-side `npm run watch:js`

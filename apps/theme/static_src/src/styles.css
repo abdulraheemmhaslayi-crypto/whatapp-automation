@@ -4210,11 +4210,11 @@ button.stepper-step:disabled { cursor: not-allowed; opacity: 0.55; }
 /* ── Preview ─────────────────────────────────────────────────── */
 
 .fb-preview {
-  flex: 0 0 auto;
-  max-height: 40%;
+  flex: 1 1 auto;
+  max-height: none;
   overflow-y: auto;
-  padding: 1rem;
-  border-bottom: 1px solid var(--border);
+  padding: 0.75rem;
+  border-bottom: none;
   background: var(--surface-0);
 }
 

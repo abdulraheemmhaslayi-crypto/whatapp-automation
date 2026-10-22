@@ -421,19 +421,21 @@ def deep_link(username: str, payload: str) -> str:
     return f"https://t.me/{username.lstrip('@')}?start={payload}"
 
 
-def webhook_url() -> str:
+def webhook_url(request: Any = None) -> str:
     """The absolute URL Telegram delivers this deployment's updates to.
 
-    ``APP_URL`` — the deployment's own configured address — rather than
-    ``request.build_absolute_uri``, following ``apps.media_library.delivery``:
-    the callers are a view (which has a request) and the secret-rotation hook
-    (which may run without one), and one source keeps them from drifting. A
-    rotation that re-pointed a live bot at a different host than the connect
-    flow used would be a very quiet outage.
+    ``APP_URL`` — the deployment's own configured address — or, if the operator
+    is accessing via a secure tunnel (e.g. ngrok HTTPS) with a request, that URL.
     """
     from django.conf import settings
 
     path = reverse("webhook_platform", kwargs={"platform": Platform.TELEGRAM.value})
+    if request is not None:
+        try:
+            if hasattr(request, "is_secure") and request.is_secure():
+                return request.build_absolute_uri(path)
+        except Exception:
+            pass
     return urljoin(settings.APP_URL.rstrip("/") + "/", path.lstrip("/"))
 
 

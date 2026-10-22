@@ -1,12 +1,16 @@
-{% load static %}<!DOCTYPE html>
+{% load static %}
+<!DOCTYPE html>
 <html lang="en" {% block html_style %}{% endblock %}>
+
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Quikro Automation{% endblock %}</title>
-    <meta name="description" content="Quikro Automation - High-performance multi-channel chat marketing & messaging automation platform.">
+    <meta name="description"
+        content="Quikro Automation - High-performance multi-channel chat marketing & messaging automation platform.">
     <meta property="og:title" content="{% block og_title %}Quikro Automation{% endblock %}">
-    <meta property="og:description" content="High-performance multi-channel chat marketing & messaging automation platform.">
+    <meta property="og:description"
+        content="High-performance multi-channel chat marketing & messaging automation platform.">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="Quikro Automation">
     <meta property="og:image" content="{% static 'img/quikro-automation-logo.png' %}">
@@ -56,14 +60,16 @@
         };
     </script>
     {% endif %}
-    <style nonce="{{ request.csp_nonce }}">
-        {% comment %}
-          Needed globally: the workspace switcher, the user menu and the bell
-          panel are all Alpine dropdowns, and issue #31's auth templates use
-          Alpine too. Without this every one of them renders open on first
-          paint, on every page.
-        {% endcomment %}
-        [x-cloak] { display: none !important; }
+
+        <style nonce="{{ request.csp_nonce }}">
+
+        /* Needed globally: the workspace switcher, the user menu and the bell
+           panel are all Alpine dropdowns, and issue #31's auth templates use
+           Alpine too. Without this every one of them renders open on first
+           paint, on every page. */
+        [x-cloak] {
+            display: none !important;
+        }
 
         /* ══════════════════════════════════════════
            QUIKRO MODERN DESIGN REFRESH
@@ -71,10 +77,12 @@
         :root {
             --brand-font-display: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
             --brand-font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
+            --font-display: var(--brand-font-display);
+            --font-body: var(--brand-font-body);
 
             /* Vibrant Modern Violet/Indigo for Quikro */
-            --brand-50:  #F5F3FF;
-            --brand-75:  #EDE9FE;
+            --brand-50: #F5F3FF;
+            --brand-75: #EDE9FE;
             --brand-100: #DDD6FE;
             --brand-200: #C4B5FD;
             --brand-300: #A78BFA;
@@ -97,6 +105,11 @@
             --cta: var(--brand-600);
             --cta-hover: var(--brand-700);
 
+            /* Text & Typography */
+            --text-primary: #0F172A;
+            --text-secondary: #64748B;
+            --text-muted: #94A3B8;
+
             /* Surfaces & Shadows */
             --surface-page: #F8FAFC;
             --card-shadow: 0 1px 3px rgba(15, 23, 42, 0.05), 0 6px 16px -2px rgba(15, 23, 42, 0.04);
@@ -109,7 +122,11 @@
             -webkit-font-smoothing: antialiased;
         }
 
-        h1, h2, h3, .page-title, .section-title {
+        h1,
+        h2,
+        h3,
+        .page-title,
+        .section-title {
             font-family: var(--brand-font-display) !important;
             letter-spacing: -0.025em;
         }
@@ -193,20 +210,23 @@
             width: 6px;
             height: 6px;
         }
+
         ::-webkit-scrollbar-track {
             background: transparent;
         }
+
         ::-webkit-scrollbar-thumb {
             background: #CBD5E1;
             border-radius: 9999px;
         }
+
         ::-webkit-scrollbar-thumb:hover {
             background: #94A3B8;
         }
 
         /* Eliminate empty side space on wide monitors: make containers fluid */
-        .max-w-\[1060px\],
-        .page-header.max-w-\[1060px\] {
+        [class*="max-w-[1060px]"],
+        .page-header[class*="max-w-[1060px]"] {
             max-width: 100% !important;
             width: 100% !important;
         }
@@ -214,196 +234,214 @@
         .app-content {
             width: 100% !important;
         }
-        {% if show_app_shell %}
-        {% comment %}
-          **Leg 2.** Only the width is here; every other collapsed rule lives
-          in styles.css beside the rule it mirrors, where the pair cannot drift
-          apart, and applies pre-paint anyway because the stylesheet is a
-          render-blocking <link>. The width is the exception because its real
-          value comes from a Tailwind utility (`lg:w-60` / `lg:w-[60px]`) that
-          Alpine binds once it boots — and this file is unlayered, so a width
-          in styles.css would beat that utility and the collapse would never
-          move. Scoped to .sidebar-initial, which leg 3 strips at handover, so
-          it stops applying at exactly the moment the utility starts.
-        {% endcomment %}
-        .sidebar-initial { width: 240px; }
-        html.sidebar-is-collapsed .sidebar-initial { width: 60px; }
+    </style>
+    {% if show_app_shell %}
+    <style nonce="{{ request.csp_nonce }}">
+        /* **Leg 2.** Only the width is here; every other collapsed rule lives
+           in styles.css beside the rule it mirrors, where the pair cannot drift
+           apart, and applies pre-paint anyway because the stylesheet is a
+           render-blocking <link>. The width is the exception because its real
+           value comes from a Tailwind utility (`lg:w-60` / `lg:w-[60px]`) that
+           Alpine binds once it boots — and this file is unlayered, so a width
+           in styles.css would beat that utility and the collapse would never
+           move. Scoped to .sidebar-initial, which leg 3 strips at handover, so
+           it stops applying at exactly the moment the utility starts. */
+        .sidebar-initial {
+            width: 240px;
+        }
+
+        html.sidebar-is-collapsed .sidebar-initial {
+            width: 60px;
+        }
+
         @media (max-width: 1023px) {
             .sidebar-initial {
                 position: fixed;
-                top: 0; bottom: 0; left: 0;
+                top: 0;
+                bottom: 0;
+                left: 0;
                 transform: translateX(-100%);
                 z-index: 40;
                 width: 240px !important;
             }
+
             /* There is no collapsed state on a phone: the drawer is either
                open at full width or off-screen. */
-            html.sidebar-is-collapsed .sidebar-initial { width: 240px !important; }
+            html.sidebar-is-collapsed .sidebar-initial {
+                width: 240px !important;
+            }
         }
-        {% endif %}
     </style>
+    {% endif %}
     {% block extra_head %}{% endblock %}
 </head>
+
 <body class="min-h-screen" style="background: var(--surface-page); color: var(--text-primary);">
-{% csrf_token %}
-<script nonce="{{ request.csp_nonce }}">
-    // The hidden input above is the single global CSRF source for every htmx
-    // request. The cookie is deliberately not HttpOnly for the same reason,
-    // but reading the input avoids depending on cookie parsing.
-    //
-    // The origin check is not optional. htmx will happily issue a cross-origin
-    // request, and attaching the token unconditionally means any hx-* pointing
-    // off-site hands the session's CSRF token to that host. Message text,
-    // usernames and media URLs all arrive from strangers
-    // (SECURITY-BASELINE §2), so from Layer 3 onwards this template renders
-    // attacker-influenced content — the guard belongs here, once, rather than
-    // in every surface that later learns to display it.
-    document.body.addEventListener('htmx:configRequest', function (event) {
-        var target;
-        try {
-            target = new URL(event.detail.path, window.location.href);
-        } catch (e) {
-            return;  // Unparseable target: send nothing rather than guess.
-        }
-        if (target.origin !== window.location.origin) { return; }
-        var token = document.querySelector('[name=csrfmiddlewaretoken]');
-        if (token) { event.detail.headers['X-CSRFToken'] = token.value; }
-    });
-</script>
+    {% csrf_token %}
+    <script nonce="{{ request.csp_nonce }}">
+        // The hidden input above is the single global CSRF source for every htmx
+        // request. The cookie is deliberately not HttpOnly for the same reason,
+        // but reading the input avoids depending on cookie parsing.
+        //
+        // The origin check is not optional. htmx will happily issue a cross-origin
+        // request, and attaching the token unconditionally means any hx-* pointing
+        // off-site hands the session's CSRF token to that host. Message text,
+        // usernames and media URLs all arrive from strangers
+        // (SECURITY-BASELINE §2), so from Layer 3 onwards this template renders
+        // attacker-influenced content — the guard belongs here, once, rather than
+        // in every surface that later learns to display it.
+        document.body.addEventListener('htmx:configRequest', function (event) {
+            var target;
+            try {
+                target = new URL(event.detail.path, window.location.href);
+            } catch (e) {
+                return;  // Unparseable target: send nothing rather than guess.
+            }
+            if (target.origin !== window.location.origin) { return; }
+            var token = document.querySelector('[name=csrfmiddlewaretoken]');
+            if (token) { event.detail.headers['X-CSRFToken'] = token.value; }
+        });
+    </script>
 
-{% include "partials/_toast_host.html" %}
+    {% include "partials/_toast_host.html" %}
 
-{% if show_app_shell %}
-{% comment %}
-  Two pieces of shell state. `sidebarCollapsed` is desktop-only and persisted —
-  x-effect writes it back on every change through the head script's guarded
-  helper, and the pre-paint script beside that helper reads it before Alpine
-  exists. `mobileMenuOpen` is the drawer and is deliberately NOT persisted: a
-  drawer that reopens itself on the next page is a drawer covering the page
-  you asked for.
-
-  `wsOpen` used to be here because two controls opened one panel. There is one
-  trigger now, so it lives on the switcher — see partials/_app_sidebar.html.
-{% endcomment %}
-<div class="flex h-screen overflow-hidden"
-     style="background: var(--surface-page);"
-     x-data="{ sidebarCollapsed: window.__bbSidebarCollapsed === true, mobileMenuOpen: false }"
-     x-effect="window.__bbStoreSidebarCollapsed(sidebarCollapsed)"
-     @keydown.escape.window="mobileMenuOpen = false">
-
+    {% if show_app_shell %}
     {% comment %}
-      `lg:hidden`, never a bare `hidden`: Alpine shows an element by clearing
-      its inline display, after which an unconditional display:none utility
-      reasserts itself and the element stays invisible forever. A responsive
-      variant is fine, and
-      test_no_element_combines_x_show_with_a_display_none_utility splits on
-      tokens for exactly that reason.
+    Two pieces of shell state. `sidebarCollapsed` is desktop-only and persisted —
+    x-effect writes it back on every change through the head script's guarded
+    helper, and the pre-paint script beside that helper reads it before Alpine
+    exists. `mobileMenuOpen` is the drawer and is deliberately NOT persisted: a
+    drawer that reopens itself on the next page is a drawer covering the page
+    you asked for.
+
+    `wsOpen` used to be here because two controls opened one panel. There is one
+    trigger now, so it lives on the switcher — see partials/_app_sidebar.html.
     {% endcomment %}
-    <div x-show="mobileMenuOpen" x-cloak x-transition.opacity
-         @click="mobileMenuOpen = false"
-         class="sidebar-backdrop fixed inset-0 z-30 lg:hidden"></div>
-
-    {% comment %}
-      The one sidebar, on every page of the product. The block is not a seam
-      for replacing it — a second <aside> would mean a second `nav-badge-inbox`
-      — it is how a settings layout hands this same partial its rows, which is
-      the only thing about the sidebar a layout may decide. The guard is
-      apps/notifications/tests/test_shell.py::test_every_layout_that_takes_the_sidebar_block_uses_the_one_partial.
-      See partials/_app_sidebar.html and layouts/settings.html.
-
-      There used to be a 232px settings column rendered after it, in a
-      {% block secondary_nav %}. The settings rows are in the sidebar itself
-      now, so the column and its block are both gone.
-    {% endcomment %}
-    {% block app_sidebar %}{% include "partials/_app_sidebar.html" %}{% endblock %}
-
-    <div class="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {% comment %}
-          The only chrome above the page, and only below `lg`. On a desktop the
-          sidebar names the workspace and there is nothing else a bar would
-          carry — the search that used to sit in one is on the page it searched
-          (templates/contacts/list.html) and the bell is a nav row.
-
-          Not a {% templatetag openblock %} block {% templatetag closeblock %}:
-          it is shell furniture, and the header block it replaces was never
-          overridden by anything.
-        {% endcomment %}
-        <div class="mobile-topbar">
-            <button type="button" class="sidebar-toggle" @click="mobileMenuOpen = !mobileMenuOpen"
-                    title="Toggle menu" aria-label="Toggle menu"
-                    :aria-expanded="mobileMenuOpen ? 'true' : 'false'">
-                <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"
-                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-            </button>
-            <div class="flex items-center gap-2 min-w-0">
-                {% include "partials/_logo.html" with workspace=current_workspace size="sm" only %}
-                <span class="text-sm font-semibold truncate" style="color: var(--text-primary);">{{ current_workspace.name|default:"Quikro" }}</span>
-            </div>
-            {% comment %}Spacer, so the name reads as centred against the hamburger.{% endcomment %}
-            <span class="w-7 flex-shrink-0"></span>
-        </div>
-        {% block sub_nav %}{% endblock %}
+    <div class="flex h-screen overflow-hidden" style="background: var(--surface-page);"
+        x-data="{ sidebarCollapsed: window.__bbSidebarCollapsed === true, mobileMenuOpen: false }"
+        x-effect="window.__bbStoreSidebarCollapsed(sidebarCollapsed)" @keydown.escape.window="mobileMenuOpen = false">
 
         {% comment %}
-          <main> is transparent now. It used to be one big white rounded card
-          that every page rendered inside; the redesign puts the ground at
-          --surface-page and lets each screen supply its own .card sections.
-
-          {% block main_pad %} is the seam for a screen that wants to go
-          full-bleed to the viewport edges. The flow builder takes it: its
-          canvas is the whole page.
+        `lg:hidden`, never a bare `hidden`: Alpine shows an element by clearing
+        its inline display, after which an unconditional display:none utility
+        reasserts itself and the element stays invisible forever. A responsive
+        variant is fine, and
+        test_no_element_combines_x_show_with_a_display_none_utility splits on
+        tokens for exactly that reason.
         {% endcomment %}
-        <main class="app-shell-main flex-1 overflow-y-auto flex flex-col {% block main_pad %}p-4 lg:p-6{% endblock %}">
-            {% block page_header %}{% endblock %}
-            {% if messages %}
-            <div class="mb-4 space-y-2">
-                {% for message in messages %}
-                <div class="alert-{% if message.tags == 'error' %}error{% elif message.tags == 'success' %}success{% elif message.tags == 'warning' %}warning{% else %}info{% endif %}">{{ message }}</div>
-                {% endfor %}
-            </div>
-            {% endif %}
-            {% comment %}
-              .app-content gives unclassed markup a sensible default look — see
-              the note in styles.css for why those rules are in @layer base and
-              these ones are not. Kept: roughly seventeen settings and org
-              templates are still written as bare semantic HTML and would
-              unstyle completely without it.
+        <div x-show="mobileMenuOpen" x-cloak x-transition.opacity @click="mobileMenuOpen = false"
+            class="sidebar-backdrop fixed inset-0 z-30 lg:hidden"></div>
+
+        {% comment %}
+        The one sidebar, on every page of the product. The block is not a seam
+        for replacing it — a second <aside> would mean a second `nav-badge-inbox`
+            — it is how a settings layout hands this same partial its rows, which is
+            the only thing about the sidebar a layout may decide. The guard is
+            apps/notifications/tests/test_shell.py::test_every_layout_that_takes_the_sidebar_block_uses_the_one_partial.
+            See partials/_app_sidebar.html and layouts/settings.html.
+
+            There used to be a 232px settings column rendered after it, in a
+            `secondary_nav` block. The settings rows are in the sidebar itself
+            now, so the column and its block are both gone.
             {% endcomment %}
-            <div class="app-content flex-1 min-h-0 flex flex-col overflow-y-auto overflow-x-hidden {% block content_wrap %}{% endblock %}">
-            {% block content %}{% endblock %}
+            {% block app_sidebar %}{% include "partials/_app_sidebar.html" %}{% endblock %}
+
+            <div class="flex-1 flex flex-col min-w-0 overflow-hidden">
+                {% comment %}
+                The only chrome above the page, and only below `lg`. On a desktop the
+                sidebar names the workspace and there is nothing else a bar would
+                carry — the search that used to sit in one is on the page it searched
+                (templates/contacts/list.html) and the bell is a nav row.
+
+                Not a {% templatetag openblock %} block {% templatetag closeblock %}:
+                it is shell furniture, and the header block it replaces was never
+                overridden by anything.
+                {% endcomment %}
+                <div class="mobile-topbar">
+                    <button type="button" class="sidebar-toggle" @click="mobileMenuOpen = !mobileMenuOpen"
+                        title="Toggle menu" aria-label="Toggle menu" :aria-expanded="mobileMenuOpen ? 'true' : 'false'">
+                        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <line x1="3" y1="6" x2="21" y2="6" />
+                            <line x1="3" y1="12" x2="21" y2="12" />
+                            <line x1="3" y1="18" x2="21" y2="18" />
+                        </svg>
+                    </button>
+                    <div class="flex items-center gap-2 min-w-0">
+                        {% include "partials/_logo.html" with workspace=current_workspace size="sm" only %}
+                        <span class="text-sm font-semibold truncate" style="color: var(--text-primary);">{{ current_workspace.name|default:"Quikro" }}</span>
+                    </div>
+                    {% comment %}Spacer, so the name reads as centred against the hamburger.{% endcomment %}
+                    <span class="w-7 flex-shrink-0"></span>
+                </div>
+                {% block sub_nav %}{% endblock %}
+
+                {% comment %}
+                  <main> is transparent now. It used to be one big white rounded card
+                  that every page rendered inside; the redesign puts the ground at
+                  --surface-page and lets each screen supply its own .card sections.
+
+                  `main_pad` is the seam for a screen that wants to go
+                  full-bleed to the viewport edges. The flow builder takes it: its
+                  canvas is the whole page.
+                {% endcomment %}
+                    <main
+                        class="app-shell-main flex-1 overflow-y-auto flex flex-col {% block main_pad %}p-4 lg:p-6{% endblock %}">
+                        {% block page_header %}{% endblock %}
+                        {% if messages %}
+                        <div class="mb-4 space-y-2">
+                            {% for message in messages %}
+                            <div
+                                class="alert-{% if message.tags == 'error' %}error{% elif message.tags == 'success' %}success{% elif message.tags == 'warning' %}warning{% else %}info{% endif %}">
+                                {{ message }}</div>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                        {% comment %}
+                        .app-content gives unclassed markup a sensible default look — see
+                        the note in styles.css for why those rules are in @layer base and
+                        these ones are not. Kept: roughly seventeen settings and org
+                        templates are still written as bare semantic HTML and would
+                        unstyle completely without it.
+                        {% endcomment %}
+                        <div
+                            class="app-content flex-1 min-h-0 flex flex-col overflow-y-auto overflow-x-hidden {% block content_wrap %}{% endblock %}">
+                            {% block content %}{% endblock %}
+                        </div>
+                    </main>
             </div>
-        </main>
     </div>
-</div>
-{% else %}
-<main class="auth-bg min-h-screen flex items-center justify-center py-12 px-4" style="font-family: var(--font-body);">
+    {% else %}
+    <main class="auth-bg min-h-screen flex items-center justify-center py-12 px-4"
+        style="font-family: var(--font-body, var(--brand-font-body, sans-serif));">
+        {% comment %}
+        Issue #31 owns the auth templates. They extend this file and fill this
+        block; .auth-card and .auth-bg are already in the design system, so a
+        login page is `{% extends "base.html" %}` plus a card.
+        {% endcomment %}
+        {% block auth_content %}{% endblock %}
+    </main>
+    {% endif %}
+
     {% comment %}
-      Issue #31 owns the auth templates. They extend this file and fill this
-      block; .auth-card and .auth-bg are already in the design system, so a
-      login page is `{% extends "base.html" %}` plus a card.
+    Vendored JS (deviation 6). Studio pulls flatpickr, Chart.js and Sortable off a
+    public CDN, which forces that origin into script-src and style-src. Every
+    library here is served from 'self'; see scripts/vendor-js.mjs.
+
+    A Django comment rather than an HTML one on purpose: an HTML comment ships to
+    the browser, so a page documenting the removal of a CDN origin would still
+    contain that origin's hostname — and the test asserting no CDN reference
+    survives in any rendered template would fail on its own explanation.
+
+    Order is load-bearing: htmx synchronously first, then any inline script that
+    DEFINES an Alpine component, then Alpine itself deferred so those definitions
+    exist by the time it boots.
     {% endcomment %}
-    {% block auth_content %}{% endblock %}
-</main>
-{% endif %}
-
-{% comment %}
-  Vendored JS (deviation 6). Studio pulls flatpickr, Chart.js and Sortable off a
-  public CDN, which forces that origin into script-src and style-src. Every
-  library here is served from 'self'; see scripts/vendor-js.mjs.
-
-  A Django comment rather than an HTML one on purpose: an HTML comment ships to
-  the browser, so a page documenting the removal of a CDN origin would still
-  contain that origin's hostname — and the test asserting no CDN reference
-  survives in any rendered template would fail on its own explanation.
-
-  Order is load-bearing: htmx synchronously first, then any inline script that
-  DEFINES an Alpine component, then Alpine itself deferred so those definitions
-  exist by the time it boots.
-{% endcomment %}
-<script src="{% static 'js/vendor/htmx.min.js' %}"></script>
-{% include "partials/_modal_behaviours.html" %}
-{% block alpine_components %}{% endblock %}
-<script src="{% static 'js/vendor/alpine.min.js' %}" defer></script>
-{% block extra_js %}{% endblock %}
+    <script src="{% static 'js/vendor/htmx.min.js' %}"></script>
+    {% include "partials/_modal_behaviours.html" %}
+    {% block alpine_components %}{% endblock %}
+    <script src="{% static 'js/vendor/alpine.min.js' %}" defer></script>
+    {% block extra_js %}{% endblock %}
 </body>
+
 </html>

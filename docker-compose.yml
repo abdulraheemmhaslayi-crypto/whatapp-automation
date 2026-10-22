@@ -23,6 +23,7 @@ x-app-environment: &app-environment
   ENCRYPTION_KEY_SALT: ${ENCRYPTION_KEY_SALT:-}
   ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
   APP_URL: ${APP_URL:-http://localhost:8000}
+  CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-}
   # A local .env reaches the container through `env_file` below (and through
   # the dev bind-mount). Point the settings loader away from the file so the
   # environment is the single source of truth inside the container.

@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchPicker } from "../../api/flows";
 import type { BuilderEnv } from "../../env";
 import type { MediaAsset, MediaFolder } from "../../schema/types";
+import { cacheMediaAssets } from "../../media/mediaResolver";
 
 const KINDS = ["", "image", "audio", "video", "file"] as const;
 
@@ -61,6 +62,7 @@ export function MediaPickerDialog({ env, platform, kind: fixedKind, onPick, onCl
         if (ticket !== latest.current) {
           return;
         }
+        cacheMediaAssets(payload.results);
         setAssets((current) => (append ? [...current, ...payload.results] : payload.results));
         setFolders(payload.folders);
         setCursor(payload.next_cursor);

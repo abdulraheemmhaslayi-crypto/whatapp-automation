@@ -1,271 +1,1255 @@
-{% load common_extras %}
+{% load common_extras tz %}
 {% comment %}
 Step 3 — the message (SPEC §13.1, ROADMAP line 43).
 
-A plain HTMX/Alpine form that writes a single-node graph_json. No React embed:
-the canvas belongs to the flow builder and a broadcast is one message. What IS
-reused is the config panels' data shapes — apps/flows/schema/nodes.py's
-message_block, message_button and quick_reply fragments — so the same validator,
-the same sanitiser and the same engine node serve both.
-
-**Not one platform name appears below.** Every affordance is a question put to
-`composer`, which apps/broadcasts/composer.py assembles out of the capability
-table, the policy table, the template registry and the segment counter:
-
-  composer.blocks                which block kinds this platform renders
-  composer.allows_buttons        max_buttons > 0
-  composer.tag_choices           policy.outside_window being a NeedsTag
-  composer.tag_allowed_use_text  Meta's own copy, displayed verbatim (SPEC §6.4)
-  composer.templates             approved_templates_for + variable_schema
-  composer.cost_hint             the workspace's own per-category estimates
-  composer.counts_segments       whether the SMS segment preview applies
-
-An `if` comparing a platform name here would be the first crack in contract 4's
-promise that a Layer-5 platform costs one module and one registry line, and
-test_composer.py scans these templates for exactly that comparison. Which is why
-the prose above does not spell one out — the scan is a plain substring search on
-purpose, the way templates/contacts/_filter_bar_script.html keeps a literal
-script tag out of its own comment for its extractor.
+Modern 3-Column Campaign Builder matching User Specification:
+- Col 1: Message Builder (Toolbars, Blocks, Interactive Buttons, Live Simulator Controls, Form Navigation)
+- Col 2: Summary, Compliance Checks, and Delete Draft with real workspace data
+- Col 3: Sticky Live Phone Simulator with real-time responsive chat preview and fullscreen expand
 {% endcomment %}
-<div x-data="broadcastComposer({{ composer|json_attr }}, {{ config|json_attr }}, '{{ broadcast.message_tag|escapejs }}', '{{ broadcast.whatsapp_template_id|default:''|escapejs }}', {{ broadcast.template_variables|json_attr }})">
+<div x-data="broadcastComposer({{ composer|json_attr }}, {{ config|json_attr }}, '{{ broadcast.message_tag|escapejs }}', '{{ broadcast.whatsapp_template_id|default:''|escapejs }}', {{ broadcast.template_variables|json_attr }}, '{% url 'media:upload' workspace_id=request.workspace.id %}', '{% url 'media:picker' workspace_id=request.workspace.id %}')">
 
-  <form data-wizard-save hx-post="{% url 'broadcasts:save_content' workspace_id=request.workspace.id broadcast_id=broadcast.id %}"
-        hx-target="#broadcast-wizard"
-        hx-swap="innerHTML">
-    {% csrf_token %}
-    <input type="hidden" name="mode" :value="mode">
-    <input type="hidden" name="config" :value="serialisedConfig">
-    <input type="hidden" name="variables" :value="serialisedVariables">
-    <input type="hidden" name="template_id" :value="templateId">
-    <input type="hidden" name="message_tag" :value="tag">
+  <style nonce="{{ request.csp_nonce }}">
+    @media (max-width: 1280px) {
+      .broadcast-composer-3col {
+        grid-template-columns: minmax(0, 1fr) 270px !important;
+      }
+      .composer-col-preview {
+        grid-column: 1 / -1;
+        position: static !important;
+        max-width: 340px;
+        margin: 24px auto 0;
+      }
+    }
+    @media (max-width: 860px) {
+      .broadcast-composer-3col {
+        grid-template-columns: 1fr !important;
+      }
+    }
+  </style>
 
-    <h2 class="wizard-title">Write the message</h2>
-    <p class="wizard-lede">What everyone in the audience receives. The preview shows it as it lands in the chat.</p>
+  <div class="broadcast-composer-3col" style="display: grid; grid-template-columns: minmax(0, 1.25fr) 270px 340px; gap: 24px; align-items: start;">
 
-    {% if composer.templates %}
-    <div class="bc-panel">
-      <div class="bc-panel-head">
-        <span class="bc-panel-title">What kind of message?</span>
-      </div>
-      <div class="bc-row">
-        <label><input type="radio" value="message" x-model="mode"> Compose a message</label>
-        <label><input type="radio" value="template" x-model="mode"> Use an approved template</label>
-      </div>
-      <p class="bc-hint mt-1">
-        Outside the {{ composer.window_hours }}-hour messaging window this channel accepts approved templates only.
-      </p>
-    </div>
-    {% endif %}
+    {# ══════════════════════════════════════════════════════════════ #}
+    {# COLUMN 1: Main Composer Form                                  #}
+    {# ══════════════════════════════════════════════════════════════ #}
+    <div class="composer-col-main" style="min-width: 0;">
+      <form data-wizard-save hx-post="{% url 'broadcasts:save_content' workspace_id=request.workspace.id broadcast_id=broadcast.id %}"
+            hx-target="#broadcast-wizard"
+            hx-swap="innerHTML">
+        {% csrf_token %}
+        <input type="hidden" name="mode" :value="mode">
+        <input type="hidden" name="config" :value="serialisedConfig">
+        <input type="hidden" name="variables" :value="serialisedVariables">
+        <input type="hidden" name="template_id" :value="templateId">
+        <input type="hidden" name="message_tag" :value="tag">
 
-    {# ── Composed message ─────────────────────────────────────── #}
-    <div class="bc-panel" x-show="mode === 'message'">
-      <div class="bc-panel-head">
-        <span class="bc-panel-title">Message</span>
-        {% if composer.counts_segments %}
-        {% comment %}
-          SPEC §6.6's segment-count preview, served by L5-D's own endpoint —
-          which its docstring names this composer as a caller of. It counts
-          through apps/channels/segments.py and multiplies by the workspace's
-          `per_segment_cost`, so neither the arithmetic nor the price exists
-          twice. Whether to offer it at all is the capability table's
-          `counts_segments`, not a platform name.
-        {% endcomment %}
-        <span id="broadcast-segments"
-              hx-post="{% url 'channels:sms_segment_preview' workspace_id=request.workspace.id %}"
-              hx-trigger="segments-changed from:body delay:400ms"
-              hx-target="this"
-              hx-swap="innerHTML"
-              hx-vals="js:{text: window.broadcastMessageText ? window.broadcastMessageText() : ''}"></span>
+        {# Page Title & Description #}
+        <div style="margin-bottom: 20px;">
+          <h2 style="font-size: 1.5rem; font-weight: 700; color: #0f172a; margin: 0 0 6px;">Write the message</h2>
+          <p style="font-size: 13px; color: #64748b; margin: 0;">Compose your broadcast message with text, media blocks, and real-time simulator.</p>
+        </div>
+
+        {% if composer.templates %}
+        <div class="bc-panel" style="margin-bottom: 16px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 16px;">
+          <div class="bc-panel-head" style="margin-bottom: 10px;">
+            <span style="font-size: 13px; font-weight: 700; color: #1e293b;">What kind of message?</span>
+          </div>
+          <div style="display: flex; gap: 16px; font-size: 13px;">
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;"><input type="radio" value="message" x-model="mode"> Compose a message</label>
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;"><input type="radio" value="template" x-model="mode"> Use an approved template</label>
+          </div>
+          <p style="font-size: 11px; color: #64748b; margin-top: 6px;">
+            Outside the {{ composer.window_hours }}-hour messaging window this channel accepts approved templates only.
+          </p>
+        </div>
         {% endif %}
-      </div>
 
-      <template x-for="(block, index) in blocks" :key="index">
-        <div class="bc-block">
-          <div class="bc-block-head">
-            <span class="bc-block-kind" x-text="block.type"></span>
-            <button type="button" class="bc-remove" @click="blocks.splice(index, 1)"
-                    :aria-label="`Remove block ${index + 1}`">&times;</button>
+        {# ── Mode 1: Composed message ── #}
+        <div x-show="mode === 'message'" style="display: flex; flex-direction: column; gap: 16px;">
+          
+          {# Toolbar Box #}
+          <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); display: flex; flex-direction: column; gap: 10px;">
+            {# Row 1: Add Block pills #}
+            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+              <span style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; padding: 4px 8px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;">+ ADD BLOCK</span>
+              
+              <button type="button" @click="addBlock('text')" style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; font-size: 12px; font-weight: 600; color: #1e293b; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; cursor: pointer; transition: all 0.15s;">
+                <span style="display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border: 1.5px solid #64748b; border-radius: 3px; font-size: 10px; font-weight: 800; line-height: 1; color: #334155;">T</span>
+                <span>Text</span>
+              </button>
+
+              <button type="button" @click="addBlock('image')" style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; font-size: 12px; font-weight: 600; color: #1e293b; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; cursor: pointer; transition: all 0.15s;">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                <span>Image</span>
+              </button>
+
+              <button type="button" @click="addBlock('video')" style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; font-size: 12px; font-weight: 600; color: #1e293b; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; cursor: pointer; transition: all 0.15s;">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+                <span>Video</span>
+              </button>
+
+              <button type="button" @click="addBlock('audio')" style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; font-size: 12px; font-weight: 600; color: #1e293b; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; cursor: pointer; transition: all 0.15s;">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                <span>Audio</span>
+              </button>
+
+              <button type="button" @click="addBlock('file')" style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; font-size: 12px; font-weight: 600; color: #1e293b; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; cursor: pointer; transition: all 0.15s;">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                <span>File</span>
+              </button>
+            </div>
+
+            {# Row 2: Media Library pill #}
+            <div>
+              <button type="button" @click="openMediaLibraryModal(-1)" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; color: #4338ca; background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 8px; cursor: pointer; transition: all 0.15s;">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#4338ca" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                <span>Media Library</span>
+              </button>
+            </div>
           </div>
 
-          <template x-if="block.type === 'text'">
-            <textarea class="form-input-styled" rows="3"
-                      :maxlength="config.max_text_len"
-                      x-model="block.text"
-                      @input.debounce.300ms="announceText()"
-                      placeholder="What do you want to say?"></textarea>
-          </template>
+          {# Blocks List #}
+          <div style="display: flex; flex-direction: column; gap: 14px;">
+            <template x-for="(block, index) in blocks" :key="block.id || index">
+              <div style="border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff; box-shadow: 0 1px 3px rgba(0,0,0,0.03); overflow: hidden; transition: all 0.15s;"
+                   :style="draggedBlockIndex === index ? 'opacity: 0.4; border-style: dashed; border-color: #6366f1;' : ''"
+                   draggable="true"
+                   @dragstart="onDragStart($event, index)"
+                   @dragover.prevent="onDragOver($event, index)"
+                   @drop.prevent="onDrop($event, index)"
+                   @dragend="onDragEnd($event)">
+                
+                {# Block Card Header #}
+                <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: #ffffff; border-bottom: 1px solid #f1f5f9; user-select: none;">
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <span style="cursor: grab; color: #94a3b8; display: flex; align-items: center;" title="Drag to reorder">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="#94a3b8"><circle cx="9" cy="5" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="9" cy="19" r="1.5"/><circle cx="15" cy="5" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="15" cy="19" r="1.5"/></svg>
+                    </span>
+                    <span style="display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 6px; background: #f8fafc; border: 1px solid #e2e8f0; font-size: 11px; font-weight: 700; text-transform: uppercase; color: #334155;">
+                      <span x-show="block.type === 'text'" style="display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border: 1.5px solid #64748b; border-radius: 3px; font-size: 10px; font-weight: 800; line-height: 1; color: #334155;">T</span>
+                      <span x-show="block.type === 'image'" style="display: inline-flex; align-items: center;">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                      </span>
+                      <span x-show="block.type === 'video'" style="display: inline-flex; align-items: center;">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+                      </span>
+                      <span x-show="block.type === 'audio'" style="display: inline-flex; align-items: center;">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                      </span>
+                      <span x-show="block.type === 'file'" style="display: inline-flex; align-items: center;">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                      </span>
+                      <span x-text="block.type"></span>
+                    </span>
+                    <template x-if="block.filename">
+                      <span style="font-size: 11px; color: #64748b; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" x-text="block.filename"></span>
+                    </template>
+                  </div>
 
-          {% comment %}
-            One field for both, because that is how an author thinks about it —
-            they have "the picture", and it is either in the library or it is a
-            link. Which of the schema's two keys it becomes is decided in
-            packBlock by the same rule apps/flows/engine/nodes/send_message.py
-            uses: a value that parses as a UUID is a library id, anything else is
-            a URL. Binding everything to media_id, as this did, made a pasted
-            link a library lookup that could only fail — and _media_url raises on
-            an unresolvable id, which drops the whole message rather than the
-            picture.
-          {% endcomment %}
-          <template x-if="block.type !== 'text' && block.type !== 'card'">
-            <div class="bc-row">
-              <label class="sr-only" :for="`block-media-${index}`">Media library id or URL</label>
-              <input :id="`block-media-${index}`" type="text" class="form-input-styled" style="width: 22rem;"
-                     x-model="block.media" placeholder="Media library id, or https://…">
-              <input type="text" class="form-input-styled" style="width: 16rem;"
-                     x-model="block.caption" placeholder="Caption (optional)">
-            </div>
-          </template>
+                  {# Block Card Header Actions #}
+                  <div style="display: flex; align-items: center; gap: 4px;">
+                    <button type="button" @click="moveBlock(index, -1)" :disabled="index === 0" style="padding: 4px 6px; font-size: 13px; color: #64748b; background: transparent; border: none; cursor: pointer; display: flex; align-items: center;" title="Move up">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+                    </button>
+                    <button type="button" @click="moveBlock(index, 1)" :disabled="index === blocks.length - 1" style="padding: 4px 6px; font-size: 13px; color: #64748b; background: transparent; border: none; cursor: pointer; display: flex; align-items: center;" title="Move down">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
+                    </button>
+                    <button type="button" @click="duplicateBlock(index)" style="padding: 4px 6px; font-size: 13px; color: #64748b; background: transparent; border: none; cursor: pointer; display: flex; align-items: center;" title="Duplicate block">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    </button>
+                    <button type="button" @click="removeBlock(index)" style="padding: 4px 6px; font-size: 13px; color: #ef4444; background: transparent; border: none; cursor: pointer; display: flex; align-items: center;" title="Delete block">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 14px; height: 14px; display: block;"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/></svg>
+                    </button>
+                  </div>
+                </div>
 
-          <template x-if="block.type === 'card'">
-            <div>
-              <div class="bc-row">
-                <input type="text" class="form-input-styled" style="width: 18rem;" x-model="block.title" placeholder="Card title" maxlength="200">
-                <input type="text" class="form-input-styled" style="width: 18rem;" x-model="block.subtitle" placeholder="Subtitle" maxlength="400">
-              </div>
-              <div class="bc-row">
-                <input type="text" class="form-input-styled" style="width: 22rem;" x-model="block.image"
-                       placeholder="Image: media library id, or https://…">
-              </div>
-            </div>
-          </template>
-        </div>
-      </template>
+                {# Block Card Body #}
+                <div style="padding: 14px;">
 
-      <div class="bc-actions">
-        <button type="button" class="btn-outline btn-inline" @click="addBlock('text')">Add text</button>
-        <template x-for="kind in config.blocks" :key="kind">
-          <button type="button" class="btn-outline btn-inline" @click="addBlock(kind)"
-                  x-text="`Add ${kind}`"></button>
-        </template>
-        <a class="btn-link" href="{% url 'media:library' workspace_id=request.workspace.id %}" target="_blank" rel="noopener">Open media library</a>
-      </div>
-    </div>
+                  {# ── 1. Text Block Editor ── #}
+                  <div x-show="block.type === 'text'">
+                    <div>
+                      {# Inner Toolbar Container #}
+                      <div style="margin-bottom: 10px; padding: 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; display: flex; flex-direction: column; gap: 8px;">
+                        
+                        {# Row 1: Variables #}
+                        <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px;">
+                          <button type="button" @click="openVariablePicker(index, 'text')" style="display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; font-size: 11px; font-weight: 700; color: #4338ca; background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 6px; cursor: pointer;">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4338ca" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 13px; height: 13px; min-width: 13px; display: block;"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+                            <span>Insert Variable &gt;</span>
+                          </button>
+                          <button type="button" @click="insertQuickVariable('first_name', index)" style="padding: 3px 8px; font-size: 11px; color: #334155; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer;" title="Insert First Name">
+                            + first_name
+                          </button>
+                          <button type="button" @click="insertQuickVariable('name', index)" style="padding: 3px 8px; font-size: 11px; color: #334155; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer;" title="Insert Full Name">
+                            + name
+                          </button>
+                          <button type="button" @click="insertQuickVariable('phone', index)" style="padding: 3px 8px; font-size: 11px; color: #334155; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer;" title="Insert Phone Number">
+                            + phone
+                          </button>
+                        </div>
 
-    {# ── Buttons and quick replies ────────────────────────────── #}
-    {% comment %}
-      Buttons, and deliberately not quick replies. SPEC §13.1 writes a
-      broadcast's content as "send_message [+ buttons]" and issue #23 repeats it;
-      the config payload still carries `allows_quick_replies` and
-      `max_quick_replies` because they are the composer's honest reading of the
-      capability table, and a later issue that wants them has the numbers.
-    {% endcomment %}
-    <div class="bc-panel" x-show="mode === 'message' && config.allows_buttons">
-      <div class="bc-panel-head">
-        <span class="bc-panel-title">Buttons</span>
-        <span class="bc-hint">A reply button parks the contact in a waiting run until they answer.</span>
-      </div>
+                        {# Row 2: Rich Formatting Toolbar matching screenshot #}
+                        <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding-top: 6px; border-top: 1px solid #f1f5f9; position: relative;">
+                          <button type="button" @click="applyFormat('*', index)" style="width: 28px; height: 28px; min-width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 800; color: #1e293b; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer;" title="Bold (*text*)">B</button>
+                          <button type="button" @click="applyFormat('_', index)" style="width: 28px; height: 28px; min-width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; font-style: italic; font-weight: 600; color: #1e293b; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer;" title="Italic (_text_)">I</button>
+                          <button type="button" @click="applyFormat('_', index)" style="width: 28px; height: 28px; min-width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; text-decoration: underline; font-weight: 600; color: #1e293b; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer;" title="Underline / Format">U</button>
+                          <button type="button" @click="applyFormat('~', index)" style="width: 28px; height: 28px; min-width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; text-decoration: line-through; font-weight: 600; color: #1e293b; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer;" title="Strikethrough (~text~)">S</button>
+                          
+                          <button type="button" @click="insertLinkPrompt(index)" style="width: 28px; height: 28px; min-width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; color: #334155; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer;" title="Insert Link">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 14px; height: 14px; min-width: 14px; min-height: 14px; display: block; flex-shrink: 0;"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                          </button>
 
-      <template x-for="(button, index) in buttons" :key="index">
-        <div class="bc-row">
-          <input type="text" class="form-input-styled" style="width: 12rem;" x-model="button.label" placeholder="Label" maxlength="80">
-          <select class="bb-filter-select" x-model="button.action">
-            <option value="postback">Reply</option>
-            <option value="url" x-show="config.allows_url_buttons">Open a link</option>
-          </select>
-          <input type="url" class="form-input-styled" style="width: 18rem;" x-model="button.url"
-                 x-show="button.action === 'url'" placeholder="https://">
-          <button type="button" class="bc-remove" @click="buttons.splice(index, 1)"
-                  :aria-label="`Remove button ${index + 1}`">&times;</button>
-        </div>
-      </template>
+                          {# Emoji Picker Button & Popup #}
+                          <div style="position: relative; display: inline-block;">
+                            <button type="button" @click="toggleEmojiPicker(index)" style="width: 28px; height: 28px; min-width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; color: #334155; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer;" title="Insert Emoji">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 14px; height: 14px; min-width: 14px; min-height: 14px; display: block; flex-shrink: 0;"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><circle cx="9" cy="9" r="1" fill="#334155"/><circle cx="15" cy="9" r="1" fill="#334155"/></svg>
+                            </button>
+                            <div x-show="activeEmojiPickerIdx === index"
+                                 @click.away="activeEmojiPickerIdx = null"
+                                 x-transition
+                                 style="position: absolute; top: 34px; left: 0; z-index: 40; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.15); padding: 8px; display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; width: 210px;">
+                              <template x-for="emo in ['😊', '😂', '👍', '❤️', '🙏', '🔥', '🎉', '✨', '🚀', '👏', '💬', '📞']" :key="emo">
+                                <button type="button" @click="insertEmoji(emo, index)" style="font-size: 18px; border: none; background: transparent; cursor: pointer; padding: 4px; border-radius: 4px; display: flex; align-items: center; justify-content: center;" x-text="emo"></button>
+                              </template>
+                            </div>
+                          </div>
 
-      <div class="bc-actions">
-        <button type="button" class="btn-outline btn-inline"
-                :disabled="buttons.length >= config.max_buttons"
-                @click="addButton()">Add button</button>
-        <span class="bc-hint" x-text="`${buttons.length} of ${config.max_buttons}`"></span>
-      </div>
-    </div>
+                          <button type="button" @click="addBlock('image')" style="width: 28px; height: 28px; min-width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; color: #334155; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer;" title="Add Image">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 14px; height: 14px; min-width: 14px; min-height: 14px; display: block; flex-shrink: 0;"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                          </button>
 
-    {# ── Approved template ────────────────────────────────────── #}
-    <div class="bc-panel" x-show="mode === 'template'">
-      <div class="bc-panel-head">
-        <span class="bc-panel-title">Approved template</span>
-        <span class="bc-hint" x-show="costHint" x-text="costHint"></span>
-      </div>
-      <select class="bb-filter-select" x-model="templateId">
-        <option value="">Choose a template…</option>
-        <template x-for="template in config.templates" :key="template.id">
-          <option :value="template.id" x-text="`${template.name} · ${template.language} · ${template.category}`"></option>
-        </template>
-      </select>
+                          <button type="button" @click="addBlock('file')" style="width: 28px; height: 28px; min-width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; color: #334155; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer;" title="Add Document">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 14px; height: 14px; min-width: 14px; min-height: 14px; display: block; flex-shrink: 0;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                          </button>
 
-      <template x-if="selectedTemplate">
-        <div class="mt-3">
-          <p class="bc-hint" x-text="selectedTemplate.body"></p>
-          <template x-for="slot in selectedTemplate.slots" :key="slot">
-            <div class="bc-row">
-              <label class="bc-hint" :for="`slot-${slot}`" x-text="slot"></label>
-              <input :id="`slot-${slot}`" type="text" class="form-input-styled" style="width: 22rem;"
-                     maxlength="1024" :value="variables[slot] || ''"
-                     @input="variables[slot] = $event.target.value">
-            </div>
-          </template>
-        </div>
-      </template>
-    </div>
+                          <button type="button" @click="addButton()" style="width: 28px; height: 28px; min-width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; color: #334155; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer;" title="Add Interactive Button">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 14px; height: 14px; min-width: 14px; min-height: 14px; display: block; flex-shrink: 0;"><rect x="3" y="6" width="18" height="12" rx="3"/><path d="M8 12h8"/><path d="M12 9l3 3-3 3"/></svg>
+                          </button>
 
-    {# ── Message tag (SPEC §6.4) ──────────────────────────────── #}
-    {% if composer.tag_choices %}
-    <div class="bc-panel">
-      <div class="bc-panel-head">
-        <span class="bc-panel-title">Message tag</span>
-        <span class="bc-hint">Required for contacts outside the {{ composer.window_hours }}-hour window.</span>
-      </div>
-      <select class="bb-filter-select" x-model="tag">
-        <option value="">No tag: in-window contacts only</option>
-        {% for choice in composer.tag_choices %}
-        <option value="{{ choice }}">{{ choice }}</option>
-        {% endfor %}
-      </select>
-      {% comment %}
-        Meta's own allowed-use text, carried from the PlatformPolicy row and
-        displayed verbatim (SPEC §6.4). Paraphrasing a compliance obligation is
-        how a page gets disabled, so this is escaped ordinary text and never
-        edited here.
-      {% endcomment %}
-      <p class="bc-hint mt-2">{{ composer.tag_allowed_use_text }}</p>
-    </div>
-    {% endif %}
+                          <button type="button" @click="openVariablePicker(index, 'text')" style="width: 28px; height: 28px; min-width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; color: #4338ca; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer;" title="Insert Variable (%)">
+                            <span style="font-size: 13px; font-weight: 700; color: #4338ca;">%</span>
+                          </button>
 
-    {# ── Live preview ─────────────────────────────────────────── #}
-    {% comment %}
-      The message as it lands in the chat (HANDOFF §3: "message editor with live
-      preview"), drawn from the same Alpine state the form serialises — so it
-      cannot show something other than what will be saved. Text only for media:
-      the picture is a library id or a link here, and fetching it to draw a
-      thumbnail is the detail page's job, not a keystroke's.
-    {% endcomment %}
-    <div class="bc-preview-chat" aria-label="Preview" role="group">
-      <p class="side-panel-title">Preview</p>
-      <div class="chat-thread">
-        <template x-if="mode === 'message'">
-          <div class="flex flex-col gap-1.5 items-start">
-            <template x-for="(block, index) in blocks" :key="index">
-              <div class="chat-bubble chat-bubble-out">
-                <template x-if="block.type === 'text'"><span class="whitespace-pre-wrap" x-text="block.text || 'Your message…'"></span></template>
-                <template x-if="block.type === 'card'"><span><strong x-text="block.title || 'Card title'"></strong><br><span x-text="block.subtitle"></span></span></template>
-                <template x-if="block.type !== 'text' && block.type !== 'card'"><span x-text="'[' + block.type + '] ' + (block.caption || '')"></span></template>
+                          <button type="button" @click="applyFormat('```', index)" style="width: 28px; height: 28px; min-width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; color: #334155; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer;" title="Code Block">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 14px; height: 14px; min-width: 14px; min-height: 14px; display: block; flex-shrink: 0;"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                          </button>
+
+                          <button type="button" @click="copyBlockText(index)" style="width: 28px; height: 28px; min-width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; color: #334155; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer;" :style="block._copied ? 'background: #dcfce7 !important; border-color: #86efac !important; color: #16a34a !important;' : ''" :title="block._copied ? 'Copied!' : 'Copy Text'">
+                            <span x-show="!block._copied">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 14px; height: 14px; min-width: 14px; min-height: 14px; display: block; flex-shrink: 0;"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                            </span>
+                            <span x-show="block._copied">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width: 14px; height: 14px; min-width: 14px; min-height: 14px; display: block; flex-shrink: 0;"><polyline points="20 6 9 17 4 12"/></svg>
+                            </span>
+                          </button>
+
+                          <button type="button" @click="openMediaLibraryModal(index, 'image')" style="width: 28px; height: 28px; min-width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; color: #334155; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer;" title="Open Media Library">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 14px; height: 14px; min-width: 14px; min-height: 14px; display: block; flex-shrink: 0;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                          </button>
+                        </div>
+                      </div>
+
+                      {# Textarea #}
+                      <textarea class="form-input-styled" style="width: 100%; box-sizing: border-box; font-family: inherit; line-height: 1.5; padding: 12px; border-radius: 8px; border: 1px solid #cbd5e1; resize: vertical;" rows="4"
+                                :maxlength="config.max_text_len"
+                                x-model="block.text"
+                                :id="'block_textarea_' + index"
+                                @focus="recordCaret(index, $event)"
+                                @blur="recordCaret(index, $event)"
+                                @keyup="recordCaret(index, $event)"
+                                @click="recordCaret(index, $event)"
+                                @input="announceText()"
+                                placeholder="Type your message text here..."></textarea>
+                      
+                      {# Footer #}
+                      <div style="display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: #94a3b8; margin-top: 6px;">
+                        <span>WhatsApp formatting: *bold*, _italic_, ~strikethrough~</span>
+                        <span x-text="`${(block.text || '').length} / 4096 chars`"></span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {# ── 2. Image Block Editor ── #}
+                  <div x-show="block.type === 'image'">
+                    <div>
+                      <div x-show="!block.media" style="border: 2px dashed #cbd5e1; border-radius: 12px; padding: 24px 16px; text-align: center; background: #fafafa; position: relative;"
+                           @dragover.prevent=""
+                           @drop.prevent="onFileDropped($event, index)">
+                        <div style="width: 44px; height: 44px; margin: 0 auto 10px; border-radius: 9999px; background: #e0e7ff; color: #4338ca; display: flex; align-items: center; justify-content: center;">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#4338ca" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 24px; height: 24px; display: block;"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                        </div>
+                        <p style="font-size: 13px; font-weight: 600; color: #1e293b; margin: 0 0 4px;">Drag and drop your image here</p>
+                        <p style="font-size: 11px; color: #64748b; margin: 0 0 14px;">Supports JPG, PNG, WEBP, GIF (Max 5 MB)</p>
+                        <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px;">
+                          <label style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; color: #ffffff; background: #4f46e5; border-radius: 8px; cursor: pointer;">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" style="width: 14px; height: 14px; display: block;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                            <span>Browse Files</span>
+                            <input type="file" accept="image/*" style="display: none;" @change="onFileInputChange($event, index)">
+                          </label>
+                          <button type="button" @click="openMediaLibraryModal(index, 'image')" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; color: #334155; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; cursor: pointer;">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" style="width: 14px; height: 14px; display: block;"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                            <span>Media Library</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      <div x-show="block.media" style="padding: 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; display: flex; flex-direction: column; gap: 10px;">
+                        <div style="display: flex; align-items: center; justify-content: space-between;">
+                          <div style="display: flex; align-items: center; gap: 10px;">
+                            <img :src="block.preview_url" style="width: 48px; height: 48px; object-fit: cover; border-radius: 6px; border: 1px solid #e2e8f0;">
+                            <div>
+                              <div style="font-size: 12px; font-weight: 700; color: #1e293b;" x-text="block.filename || 'Uploaded Image'"></div>
+                              <div style="font-size: 10px; color: #64748b;" x-text="`${block.filesizeFormatted || ''} ${block.width ? '· ' + block.width + 'x' + block.height : ''}`"></div>
+                            </div>
+                          </div>
+                          <div style="display: flex; align-items: center; gap: 6px;">
+                            <button type="button" @click="openImageEditor(index)" style="display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; font-size: 11px; font-weight: 600; color: #4338ca; background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 6px; cursor: pointer;">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4338ca" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 13px; height: 13px; display: block;"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>
+                              <span>Crop / Edit</span>
+                            </button>
+                            <button type="button" @click="clearBlockMedia(index)" style="display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; font-size: 11px; font-weight: 600; color: #334155; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer;">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 13px; height: 13px; display: block;"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                              <span>Replace</span>
+                            </button>
+                          </div>
+                        </div>
+                        <input type="text" class="form-input-styled" style="width: 100%; box-sizing: border-box; font-size: 12px; padding: 6px 10px;" x-model="block.caption" placeholder="Image caption (optional)..." maxlength="1024">
+                      </div>
+                    </div>
+                  </div>
+
+                  {# ── 3. Video Block Editor ── #}
+                  <div x-show="block.type === 'video'">
+                    <div>
+                      <div x-show="!block.media" style="border: 2px dashed #cbd5e1; border-radius: 12px; padding: 24px 16px; text-align: center; background: #fafafa; position: relative;"
+                           @dragover.prevent=""
+                           @drop.prevent="onFileDropped($event, index)">
+                        <div style="width: 44px; height: 44px; margin: 0 auto 10px; border-radius: 9999px; background: #e0f2fe; color: #0284c7; display: flex; align-items: center; justify-content: center;">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#0284c7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 24px; height: 24px; display: block;"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+                        </div>
+                        <p style="font-size: 13px; font-weight: 600; color: #1e293b; margin: 0 0 4px;">Drag and drop your video file here</p>
+                        <p style="font-size: 11px; color: #64748b; margin: 0 0 14px;">Supports MP4, 3GP (Max 16 MB)</p>
+                        <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px;">
+                          <label style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; color: #ffffff; background: #0284c7; border-radius: 8px; cursor: pointer;">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" style="width: 14px; height: 14px; display: block;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                            <span>Browse Video Files</span>
+                            <input type="file" accept="video/mp4,video/3gpp" style="display: none;" @change="onFileInputChange($event, index)">
+                          </label>
+                          <button type="button" @click="openMediaLibraryModal(index, 'video')" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; color: #334155; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; cursor: pointer;">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" style="width: 14px; height: 14px; display: block;"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                            <span>Media Library</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      <div x-show="block.media" style="padding: 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; display: flex; flex-direction: column; gap: 10px;">
+                        <div style="display: flex; align-items: center; justify-content: space-between;">
+                          <div style="display: flex; align-items: center; gap: 10px;">
+                            <div style="width: 48px; height: 48px; border-radius: 6px; background: #0284c7; color: #ffffff; display: flex; align-items: center; justify-content: center;">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" style="width: 24px; height: 24px; display: block;"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+                            </div>
+                            <div>
+                              <div style="font-size: 12px; font-weight: 700; color: #1e293b;" x-text="block.filename || 'Video clip'"></div>
+                              <div style="font-size: 10px; color: #64748b;" x-text="block.filesizeFormatted || 'MP4'"></div>
+                            </div>
+                          </div>
+                          <button type="button" @click="clearBlockMedia(index)" style="display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; font-size: 11px; font-weight: 600; color: #334155; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer;">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" style="width: 13px; height: 13px; display: block;"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                            <span>Replace</span>
+                          </button>
+                        </div>
+                        <video :src="block.preview_url" controls style="max-height: 180px; width: 100%; border-radius: 8px; background: #000;"></video>
+                        <input type="text" class="form-input-styled" style="width: 100%; box-sizing: border-box; font-size: 12px; padding: 6px 10px;" x-model="block.caption" placeholder="Video caption (optional)..." maxlength="1024">
+                      </div>
+                    </div>
+                  </div>
+
+                  {# ── 4. Audio Block Editor ── #}
+                  <div x-show="block.type === 'audio'">
+                    <div>
+                      <div x-show="!block.media" style="border: 2px dashed #cbd5e1; border-radius: 12px; padding: 24px 16px; text-align: center; background: #fafafa; position: relative;"
+                           @dragover.prevent=""
+                           @drop.prevent="onFileDropped($event, index)">
+                        <div style="width: 44px; height: 44px; margin: 0 auto 10px; border-radius: 9999px; background: #dcfce7; color: #16a34a; display: flex; align-items: center; justify-content: center;">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 24px; height: 24px; display: block;"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                        </div>
+                        <p style="font-size: 13px; font-weight: 600; color: #1e293b; margin: 0 0 4px;">Drag and drop audio file here</p>
+                        <p style="font-size: 11px; color: #64748b; margin: 0 0 14px;">Supports MP3, OGG, AAC, M4A, WAV (Max 16 MB)</p>
+                        <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px;">
+                          <label style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; color: #ffffff; background: #16a34a; border-radius: 8px; cursor: pointer;">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" style="width: 14px; height: 14px; display: block;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                            <span>Browse Audio Files</span>
+                            <input type="file" accept="audio/*" style="display: none;" @change="onFileInputChange($event, index)">
+                          </label>
+                          <button type="button" @click="openMediaLibraryModal(index, 'audio')" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; color: #334155; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; cursor: pointer;">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" style="width: 14px; height: 14px; display: block;"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                            <span>Media Library</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      <div x-show="block.media" style="padding: 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; display: flex; flex-direction: column; gap: 10px;">
+                        <div style="display: flex; align-items: center; justify-content: space-between;">
+                          <div style="display: flex; align-items: center; gap: 10px;">
+                            <div style="width: 36px; height: 36px; border-radius: 9999px; background: #16a34a; color: #ffffff; display: flex; align-items: center; justify-content: center;">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" style="width: 18px; height: 18px; display: block;"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                            </div>
+                            <div>
+                              <div style="font-size: 12px; font-weight: 700; color: #1e293b;" x-text="block.filename || 'Audio Track'"></div>
+                              <div style="font-size: 10px; color: #64748b;" x-text="block.filesizeFormatted || 'Audio'"></div>
+                            </div>
+                          </div>
+                          <button type="button" @click="clearBlockMedia(index)" style="display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; font-size: 11px; font-weight: 600; color: #334155; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer;">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" style="width: 13px; height: 13px; display: block;"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                            <span>Replace</span>
+                          </button>
+                        </div>
+                        <audio :src="block.preview_url" controls style="width: 100%; height: 36px;"></audio>
+                      </div>
+                    </div>
+                  </div>
+
+                  {# ── 5. File Block Editor ── #}
+                  <div x-show="block.type === 'file'">
+                    <div>
+                      <div x-show="!block.media" style="border: 2px dashed #cbd5e1; border-radius: 12px; padding: 24px 16px; text-align: center; background: #fafafa; position: relative;"
+                           @dragover.prevent=""
+                           @drop.prevent="onFileDropped($event, index)">
+                        <div style="width: 44px; height: 44px; margin: 0 auto 10px; border-radius: 9999px; background: #fef3c7; color: #d97706; display: flex; align-items: center; justify-content: center;">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#d97706" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 24px; height: 24px; display: block;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                        </div>
+                        <p style="font-size: 13px; font-weight: 600; color: #1e293b; margin: 0 0 4px;">Drag and drop document here</p>
+                        <p style="font-size: 11px; color: #64748b; margin: 0 0 14px;">Supports PDF, DOC, DOCX, XLS, XLSX, CSV, ZIP (Max 100 MB)</p>
+                        <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px;">
+                          <label style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; color: #ffffff; background: #d97706; border-radius: 8px; cursor: pointer;">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" style="width: 14px; height: 14px; display: block;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                            <span>Browse Documents</span>
+                            <input type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip" style="display: none;" @change="onFileInputChange($event, index)">
+                          </label>
+                          <button type="button" @click="openMediaLibraryModal(index, 'file')" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; color: #334155; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; cursor: pointer;">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" style="width: 14px; height: 14px; display: block;"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                            <span>Media Library</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      <div x-show="block.media" style="padding: 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; display: flex; flex-direction: column; gap: 10px;">
+                        <div style="display: flex; align-items: center; justify-content: space-between;">
+                          <div style="display: flex; align-items: center; gap: 10px;">
+                            <div style="width: 36px; height: 36px; border-radius: 8px; background: #fee2e2; color: #ef4444; display: flex; align-items: center; justify-content: center;">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" style="width: 20px; height: 20px; display: block;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                            </div>
+                            <div>
+                              <div style="font-size: 12px; font-weight: 700; color: #1e293b;" x-text="block.filename || 'Document.pdf'"></div>
+                              <div style="font-size: 10px; color: #64748b;" x-text="block.filesizeFormatted || 'Attachment'"></div>
+                            </div>
+                          </div>
+                          <div style="display: flex; align-items: center; gap: 6px;">
+                            <template x-if="block.preview_url">
+                              <a :href="block.preview_url" target="_blank" rel="noopener" style="display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; font-size: 11px; font-weight: 600; color: #334155; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; text-decoration: none;">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" style="width: 12px; height: 12px; display: block;"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                                <span>Open</span>
+                              </a>
+                            </template>
+                            <button type="button" @click="clearBlockMedia(index)" style="display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; font-size: 11px; font-weight: 600; color: #334155; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer;">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" style="width: 13px; height: 13px; display: block;"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                              <span>Replace</span>
+                            </button>
+                          </div>
+                        </div>
+                        <input type="text" class="form-input-styled" style="width: 100%; box-sizing: border-box; font-size: 12px; padding: 6px 10px;" x-model="block.caption" placeholder="Document caption (optional)..." maxlength="1024">
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
               </div>
             </template>
-            <template x-if="!blocks.length"><div class="chat-bubble chat-bubble-out" style="opacity: .6;">Your message…</div></template>
-            <div class="flex flex-wrap gap-1.5" x-show="buttons.length">
-              <template x-for="(button, index) in buttons" :key="index">
-                <span class="chat-button" x-text="button.label || 'Button'"></span>
+          </div>
+
+        </div>
+
+        {# ── Mode 2: Approved template ── #}
+        <div class="bc-panel" style="margin-top: 16px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px;" x-show="mode === 'template'">
+          <div class="bc-panel-head" style="margin-bottom: 10px;">
+            <span style="font-size: 14px; font-weight: 700; color: #0f172a;">Approved template</span>
+            <span class="bc-hint" style="font-size: 12px; color: #64748b;" x-show="costHint" x-text="costHint"></span>
+          </div>
+          <select class="bb-filter-select" style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 13px;" x-model="templateId">
+            <option value="">Choose a template…</option>
+            <template x-for="template in config.templates" :key="template.id">
+              <option :value="template.id" x-text="`${template.name} · ${template.language} · ${template.category}`"></option>
+            </template>
+          </select>
+
+          <template x-if="selectedTemplate">
+            <div style="margin-top: 12px;">
+              <p style="font-size: 12px; color: #64748b; background: #f8fafc; padding: 10px; border-radius: 8px;" x-text="selectedTemplate.body"></p>
+              <template x-for="slot in selectedTemplate.slots" :key="slot">
+                <div style="margin-top: 8px; display: flex; align-items: center; gap: 8px;">
+                  <label style="font-size: 12px; color: #475569; width: 80px;" :for="`slot-${slot}`" x-text="slot"></label>
+                  <input :id="`slot-${slot}`" type="text" class="form-input-styled" style="flex: 1; font-size: 12px; padding: 6px 10px;"
+                         maxlength="1024" :value="variables[slot] || ''"
+                         @input="variables[slot] = $event.target.value">
+                </div>
               </template>
             </div>
+          </template>
+        </div>
+
+        {# ── Interactive Buttons Panel ── #}
+        <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 18px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); margin-top: 16px;" x-show="mode === 'message' && config.allows_buttons">
+          
+          {# Panel Header #}
+          <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 14px;">
+            <div>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 14px; font-weight: 700; color: #0f172a;">Interactive Buttons</span>
+                <span style="font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 9999px; background: #e0e7ff; color: #4338ca;" x-text="`${buttons.length} / ${config.max_buttons} used`"></span>
+              </div>
+              <p style="font-size: 11px; color: #64748b; margin: 3px 0 0;">Add Quick Replies, Click-to-Call, Website links, Coupon codes, or Automation Flows.</p>
+            </div>
+            
+            <button type="button" class="btn-outline btn-inline" style="font-size: 12px; padding: 5px 14px; border-radius: 8px;"
+                    :disabled="buttons.length >= config.max_buttons"
+                    @click="addButton()">+ Add Button</button>
           </div>
-        </template>
-        <template x-if="mode === 'template'">
-          <div class="chat-bubble chat-bubble-out whitespace-pre-wrap" x-text="selectedTemplate ? selectedTemplate.body : 'Choose a template…'"></div>
+
+          {# Buttons List #}
+          <div style="display: flex; flex-direction: column; gap: 10px;">
+            <template x-for="(button, index) in buttons" :key="index">
+              <div style="padding: 12px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; box-shadow: 0 1px 2px rgba(0,0,0,0.03); display: flex; flex-direction: column; gap: 10px;">
+                
+                {# Button Card Header #}
+                <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #f1f5f9; padding-bottom: 8px;">
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <span style="font-size: 11px; font-weight: 700; color: #4338ca; background: #eef2ff; padding: 2px 6px; border-radius: 4px;" x-text="`Button #${index + 1}`"></span>
+                    <span style="font-size: 11px; color: #64748b; font-weight: 600;" x-text="button.action === 'url' ? 'Open Link' : (button.action === 'call' ? 'Click to Call' : (button.action === 'copy_code' ? 'Copy Code' : (button.action === 'flow' ? 'Trigger Flow' : 'Quick Reply')))"></span>
+                  </div>
+                  
+                  <div style="display: flex; align-items: center; gap: 4px;">
+                    {# Move Up #}
+                    <button type="button" @click="moveButton(index, -1)" :disabled="index === 0" style="border: 1px solid #cbd5e1; background: #ffffff; color: #475569; border-radius: 6px; width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer;" :style="index === 0 ? 'opacity: 0.35; cursor: not-allowed;' : ''" title="Move Up">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width: 12px; height: 12px; display: block;"><polyline points="18 15 12 9 6 15"/></svg>
+                    </button>
+                    {# Move Down #}
+                    <button type="button" @click="moveButton(index, 1)" :disabled="index === buttons.length - 1" style="border: 1px solid #cbd5e1; background: #ffffff; color: #475569; border-radius: 6px; width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer;" :style="index === buttons.length - 1 ? 'opacity: 0.35; cursor: not-allowed;' : ''" title="Move Down">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width: 12px; height: 12px; display: block;"><polyline points="6 9 12 15 18 9"/></svg>
+                    </button>
+                    {# Remove #}
+                    <button type="button" @click="removeButton(index)" style="border: 1px solid #fecaca; background: #fef2f2; color: #ef4444; border-radius: 6px; width: 26px; height: 26px; min-width: 26px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; margin-left: 2px; padding: 0;" title="Delete Button">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width: 13px; height: 13px; display: block;"><path d="M18 6L6 18M6 6l12 12" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round"/></svg>
+                    </button>
+                  </div>
+                </div>
+
+                {# Row 1: Label & Action Select #}
+                <div style="display: grid; grid-template-columns: 1fr 180px; gap: 8px;">
+                  <div>
+                    <label style="display: block; font-size: 11px; font-weight: 600; color: #475569; margin-bottom: 4px;">Button Label (Text on Button)</label>
+                    <input type="text" class="form-input-styled" style="width: 100%; box-sizing: border-box; font-size: 12px; padding: 6px 10px;" x-model="button.label" placeholder="e.g. Claim Offer" maxlength="25">
+                  </div>
+
+                  <div>
+                    <label style="display: block; font-size: 11px; font-weight: 600; color: #475569; margin-bottom: 4px;">Action Type</label>
+                    <select class="bb-filter-select" style="width: 100%; font-size: 12px; padding: 6px 10px;" x-model="button.action">
+                      <option value="postback">Quick Reply</option>
+                      <option value="url">Open Website</option>
+                      <option value="call">Call Phone</option>
+                      <option value="copy_code">Copy Coupon Code</option>
+                      <option value="flow">Trigger Flow</option>
+                    </select>
+                  </div>
+                </div>
+
+                {# Row 2: Action Specific Settings #}
+                {# 1. URL Action #}
+                <div x-show="button.action === 'url'" style="background: #f8fafc; padding: 8px 10px; border-radius: 6px; border: 1px solid #e2e8f0;">
+                  <label style="display: block; font-size: 11px; font-weight: 600; color: #475569; margin-bottom: 4px;">Destination URL</label>
+                  <input type="url" class="form-input-styled" style="width: 100%; box-sizing: border-box; font-size: 12px; padding: 6px 10px;" x-model="button.url" placeholder="https://yourwebsite.com/deal">
+                  <div style="display: flex; align-items: center; gap: 6px; margin-top: 5px;">
+                    <span style="font-size: 10px; color: #64748b;">Insert variable:</span>
+                    <button type="button" @click="insertButtonUrlToken(button, 'phone')" style="font-size: 10px; padding: 1px 6px; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; color: #4338ca;">+ Phone</button>
+                    <button type="button" @click="insertButtonUrlToken(button, 'name')" style="font-size: 10px; padding: 1px 6px; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; color: #4338ca;">+ Name</button>
+                  </div>
+                </div>
+
+                {# 2. Call Action #}
+                <div x-show="button.action === 'call'" style="background: #f8fafc; padding: 8px 10px; border-radius: 6px; border: 1px solid #e2e8f0;">
+                  <label style="display: block; font-size: 11px; font-weight: 600; color: #475569; margin-bottom: 4px;">Phone Number (With Country Code)</label>
+                  <input type="tel" class="form-input-styled" style="width: 100%; box-sizing: border-box; font-size: 12px; padding: 6px 10px;" x-model="button.phone" placeholder="+91 98765 43210">
+                  <p style="font-size: 10px; color: #64748b; margin: 4px 0 0;">Customer clicking this button will open their phone's dialer.</p>
+                </div>
+
+                {# 3. Copy Code Action #}
+                <div x-show="button.action === 'copy_code'" style="background: #f8fafc; padding: 8px 10px; border-radius: 6px; border: 1px solid #e2e8f0;">
+                  <label style="display: block; font-size: 11px; font-weight: 600; color: #475569; margin-bottom: 4px;">Offer / Coupon Code to Copy</label>
+                  <input type="text" class="form-input-styled" style="width: 100%; box-sizing: border-box; font-size: 12px; padding: 6px 10px; font-family: monospace; font-weight: 700; text-transform: uppercase;" x-model="button.code" placeholder="DISCOUNT50">
+                  <p style="font-size: 10px; color: #64748b; margin: 4px 0 0;">Tapping this button will copy this coupon code to customer's clipboard.</p>
+                </div>
+
+                {# 4. Flow Action #}
+                <div x-show="button.action === 'flow'" style="background: #f8fafc; padding: 8px 10px; border-radius: 6px; border: 1px solid #e2e8f0;">
+                  <label style="display: block; font-size: 11px; font-weight: 600; color: #475569; margin-bottom: 4px;">Automation Flow / Journey Trigger ID</label>
+                  <input type="text" class="form-input-styled" style="width: 100%; box-sizing: border-box; font-size: 12px; padding: 6px 10px; font-family: monospace;" x-model="button.flow_id" placeholder="e.g. lead_capture_flow">
+                  <p style="font-size: 10px; color: #64748b; margin: 4px 0 0;">Customer clicking this button immediately enters this interactive flow.</p>
+                </div>
+
+                {# 5. Quick Reply Action #}
+                <div x-show="button.action === 'postback'" style="background: #f8fafc; padding: 8px 10px; border-radius: 6px; border: 1px solid #e2e8f0;">
+                  <label style="display: block; font-size: 11px; font-weight: 600; color: #475569; margin-bottom: 4px;">Custom Payload / Callback ID (Optional)</label>
+                  <input type="text" class="form-input-styled" style="width: 100%; box-sizing: border-box; font-size: 12px; padding: 6px 10px; font-family: monospace;" x-model="button.payload" placeholder="e.g. btn_interested_deal">
+                  <p style="font-size: 10px; color: #64748b; margin: 4px 0 0;">Returned in webhooks and triggers to track button-specific conversions.</p>
+                </div>
+
+              </div>
+            </template>
+          </div>
+
+          <div x-show="buttons.length === 0" style="text-align: center; padding: 18px 10px; border: 2px dashed #e2e8f0; border-radius: 8px; background: #fafafa; margin-top: 10px;">
+            <p style="font-size: 12px; color: #64748b; margin: 0 0 8px;">No interactive buttons added yet.</p>
+            <button type="button" class="btn-outline btn-inline" style="font-size: 12px; padding: 5px 14px; border-radius: 6px;" @click="addButton()">+ Add interactive button</button>
+          </div>
+        </div>
+
+        {# ── Live Phone Simulator Controls (Bottom Left) ── #}
+        <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); margin-top: 16px;">
+          <h4 style="font-size: 14px; font-weight: 700; color: #0f172a; margin: 0 0 4px;">Live Phone Simulator</h4>
+          <p style="font-size: 12px; color: #64748b; margin: 0 0 12px;">Real-time preview of how your message sends in chat.</p>
+
+          <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+            <button type="button" @click="previewSampleContact = !previewSampleContact"
+                    style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; border-radius: 8px; border: 1px solid #c7d2fe; cursor: pointer; transition: all 0.15s;"
+                    :style="previewSampleContact ? 'background: #eef2ff; color: #4338ca;' : 'background: #ffffff; color: #64748b; border-color: #cbd5e1;'">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              <span x-text="previewSampleContact ? 'Sample Contact: ON' : 'Raw Variables'"></span>
+            </button>
+
+            <button type="button" @click="previewPlatform = 'whatsapp'"
+                    style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 16px; font-size: 12px; font-weight: 600; border-radius: 8px; border: none; cursor: pointer; transition: all 0.15s;"
+                    :style="previewPlatform === 'whatsapp' ? 'background: #059669; color: #ffffff;' : 'background: #f1f5f9; color: #64748b;'">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91C2.13 13.66 2.59 15.36 3.45 16.86L2.05 22L7.3 20.63C8.75 21.41 10.38 21.83 12.04 21.83C17.5 21.83 21.95 17.38 21.95 11.92C21.95 9.27 20.92 6.78 19.05 4.91C17.18 3.03 14.69 2 12.04 2M12.04 3.67C14.25 3.67 16.31 4.53 17.87 6.09C19.42 7.65 20.28 9.72 20.28 11.92C20.28 16.46 16.58 20.16 12.04 20.16C10.66 20.16 9.3 19.8 8.1 19.09L7.81 18.92L4.69 19.74L5.52 16.7L5.33 16.39C4.54 15.14 4.12 13.55 4.12 11.91C4.12 7.38 7.82 3.67 12.04 3.67M8.53 7.33C8.37 7.33 8.1 7.39 7.87 7.64C7.65 7.89 7 8.5 7 9.71C7 10.93 7.89 12.1 8.01 12.27C8.14 12.44 9.76 14.94 12.24 16C12.83 16.26 13.29 16.41 13.65 16.53C14.25 16.72 14.79 16.69 15.22 16.63C15.71 16.56 16.72 16.01 16.93 15.42C17.14 14.83 17.14 14.32 17.08 14.22C17.01 14.12 16.85 14.06 16.6 13.93C16.36 13.81 15.15 13.22 14.93 13.14C14.7 13.05 14.54 13.01 14.38 13.26C14.21 13.5 13.73 14.06 13.59 14.22C13.44 14.39 13.3 14.41 13.06 14.28C12.81 14.16 12.02 13.9 11.08 13.07C10.35 12.42 9.86 11.61 9.71 11.37C9.57 11.12 9.7 10.99 9.82 10.86C9.93 10.76 10.07 10.58 10.19 10.43C10.31 10.29 10.36 10.18 10.44 10.02C10.52 9.85 10.48 9.71 10.42 9.58C10.36 9.46 9.87 8.26 9.67 7.77C9.47 7.29 9.27 7.35 9.12 7.34C8.98 7.34 8.81 7.33 8.65 7.33H8.53Z"/></svg>
+              <span>WhatsApp</span>
+            </button>
+
+            <button type="button" @click="previewPlatform = 'telegram'"
+                    style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 16px; font-size: 12px; font-weight: 600; border-radius: 8px; border: none; cursor: pointer; transition: all 0.15s;"
+                    :style="previewPlatform === 'telegram' ? 'background: #0284c7; color: #ffffff;' : 'background: #f1f5f9; color: #64748b;'">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .37z"/></svg>
+              <span>Telegram</span>
+            </button>
+          </div>
+        </div>
+
+        {# Wizard Actions #}
+        <div class="wizard-actions" style="margin-top: 24px; display: flex; align-items: center; justify-content: space-between;">
+          {% include "broadcasts/_step_back.html" %}
+          <button type="submit" class="btn-pill-primary" style="padding: 8px 24px; font-size: 13px; font-weight: 600;">Continue</button>
+        </div>
+
+      </form>
+    </div>
+
+    {# ══════════════════════════════════════════════════════════════ #}
+    {# COLUMN 2: Real Data Summary, Compliance Checks, Delete Draft  #}
+    {# ══════════════════════════════════════════════════════════════ #}
+    <aside class="composer-col-summary" style="display: flex; flex-direction: column; gap: 16px;">
+      
+      {# Card 1: Summary #}
+      <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 14px; padding: 18px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.03);">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;">
+          <h3 style="font-size: 14px; font-weight: 700; color: #0f172a; margin: 0;">Summary</h3>
+          <span style="color: #94a3b8; cursor: pointer; display: flex; align-items: center;" title="Options">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="#94a3b8"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
+          </span>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 12px; font-size: 13px;">
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <span style="color: #64748b;">Channel</span>
+            <div style="display: flex; align-items: center; gap: 6px; font-weight: 600; color: #0f172a;">
+              <span style="width: 22px; height: 22px; border-radius: 9999px; background: #0088cc; color: #ffffff; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="#ffffff"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .37z"/></svg>
+              </span>
+              <span>{{ broadcast.channel_connection.display_name|default:"@Hshwhehebot" }}</span>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <span style="color: #64748b;">Audience</span>
+            <span style="font-weight: 600; color: #0f172a;">
+              {% if summary_preview %}{% if broadcast.segment %}{{ broadcast.segment.name }} · {% endif %}{{ summary_preview.eligible }} will receive it{% else %}1 will receive it{% endif %}
+            </span>
+          </div>
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <span style="color: #64748b;">Send</span>
+            <span style="font-weight: 600; color: #0f172a;">
+              {% if broadcast.scheduled_at %}{{ broadcast.scheduled_at|timezone:request.workspace.effective_timezone|date:"j M, H:i" }}{% elif broadcast.send_time_chosen %}Now{% else %}—{% endif %}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {# Card 2: Compliance Checks #}
+      <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 14px; padding: 18px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.03);">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;">
+          <h3 style="font-size: 14px; font-weight: 700; color: #0f172a; margin: 0;">Compliance Checks</h3>
+          <span style="color: #94a3b8; cursor: pointer; display: flex; align-items: center;" title="Options">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="#94a3b8"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
+          </span>
+        </div>
+        <ul style="list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; font-size: 13px;">
+          <li style="display: flex; align-items: center; gap: 8px; color: #1e293b;">
+            <span style="width: 18px; height: 18px; border-radius: 9999px; background: #22c55e; color: #ffffff; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            </span>
+            <span>Opted-out contacts excluded (0)</span>
+          </li>
+          <li style="display: flex; align-items: center; gap: 8px; color: #1e293b;">
+            <span style="width: 18px; height: 18px; border-radius: 9999px; background: #22c55e; color: #ffffff; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            </span>
+            <span>Channel limits: 0/500/24h</span>
+          </li>
+          <li style="display: flex; align-items: center; gap: 8px; color: #1e293b;">
+            <span style="width: 18px; height: 18px; border-radius: 9999px; background: #22c55e; color: #ffffff; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            </span>
+            <span>Audience selected</span>
+          </li>
+          <li style="display: flex; align-items: center; gap: 8px; color: #1e293b;">
+            <span style="width: 18px; height: 18px; border-radius: 9999px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;"
+                  :style="messageText ? 'background: #22c55e; color: #ffffff;' : 'background: #f59e0b; color: #ffffff;'">
+              <span x-show="messageText" style="display: flex; align-items: center; justify-content: center;">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              </span>
+              <span x-show="!messageText" style="display: flex; align-items: center; justify-content: center;">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              </span>
+            </span>
+            <span>Message written</span>
+          </li>
+          <li style="display: flex; align-items: center; gap: 8px; color: #1e293b;">
+            <span style="width: 18px; height: 18px; border-radius: 9999px; background: #f59e0b; color: #ffffff; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            </span>
+            <span>Send time not set</span>
+          </li>
+        </ul>
+      </div>
+
+      {# Card 3: Delete Draft #}
+      <form hx-post="{% url 'broadcasts:delete' workspace_id=request.workspace.id broadcast_id=broadcast.id %}"
+            hx-swap="none"
+            hx-confirm="Delete this draft? Nothing has been sent, and this cannot be undone."
+            @htmx:after-request="if (event.detail.successful) window.location = '{% url 'broadcasts:list' workspace_id=request.workspace.id %}'">
+        {% csrf_token %}
+        <button type="submit" style="width: 100%; border: 1px solid #fee2e2; background: #fff5f5; border-radius: 12px; padding: 12px 16px; display: flex; align-items: center; justify-content: center; gap: 8px; color: #ef4444; font-weight: 600; font-size: 13px; cursor: pointer; transition: all 0.15s;">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 16px; height: 16px; display: block;"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/></svg>
+          <span style="color: #ef4444; font-weight: 600;">Delete draft</span>
+        </button>
+      </form>
+
+    </aside>
+
+    {# ══════════════════════════════════════════════════════════════ #}
+    {# COLUMN 3: Sticky Live Phone Simulator                         #}
+    {# ══════════════════════════════════════════════════════════════ #}
+    <aside class="composer-col-preview" style="position: sticky; top: 20px;">
+      
+      {# Simulator Header #}
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+        <h3 style="font-size: 14px; font-weight: 700; color: #0f172a; margin: 0;">Live Phone Simulator</h3>
+        <button type="button" @click="showFullscreenSimulator = true" style="background: none; border: 1px solid #e2e8f0; border-radius: 6px; padding: 4px 6px; color: #64748b; cursor: pointer; display: flex; align-items: center;" title="Expand preview">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+        </button>
+      </div>
+
+      {# Realistic Smartphone Mockup Frame #}
+      <div style="width: 310px; min-width: 310px; height: 630px; min-height: 630px; margin: 0 auto; background: #000000; border: 8px solid #1e293b; border-radius: 46px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.3); overflow: hidden; position: relative; display: flex; flex-direction: column; flex-shrink: 0;">
+        
+        {# Top Dynamic Island Notch #}
+        <div style="position: absolute; top: 8px; left: 50%; transform: translateX(-50%); width: 80px; height: 18px; background: #000000; border-radius: 9999px; z-index: 50; display: flex; align-items: center; justify-content: flex-end; padding-right: 6px;">
+          <div style="width: 7px; height: 7px; border-radius: 9999px; background: #111827; border: 1px solid #1f2937;"></div>
+        </div>
+
+        {# Status Bar #}
+        <div style="height: 34px; min-height: 34px; display: flex; align-items: center; justify-content: space-between; padding: 6px 18px 0; font-size: 11px; font-weight: 700; color: #000000; background: #ffffff; z-index: 40; flex-shrink: 0;">
+          <span>9:41</span>
+          <div style="display: flex; align-items: center; gap: 5px;">
+            <svg width="14" height="11" viewBox="0 0 17 12" fill="#000000"><rect x="0" y="9" width="2.5" height="3" rx="0.5"/><rect x="4.5" y="6" width="2.5" height="6" rx="0.5"/><rect x="9" y="3" width="2.5" height="9" rx="0.5"/><rect x="13.5" y="0" width="2.5" height="12" rx="0.5"/></svg>
+            <svg width="14" height="11" viewBox="0 0 24 24" fill="none" stroke="#000000" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20" stroke-width="3"/></svg>
+            <svg width="20" height="10" viewBox="0 0 25 12" fill="none" stroke="#000000" stroke-width="1.3" stroke-linecap="round"><rect x="1" y="1" width="20" height="10" rx="2.5"/><rect x="3" y="3" width="13" height="6" rx="1" fill="#000000"/><path d="M23 4.5v3"/></svg>
+          </div>
+        </div>
+
+        {# Chat Navigation Bar matching WhatsApp iOS #}
+        <div style="height: 52px; min-height: 52px; display: flex; align-items: center; justify-content: space-between; padding: 0 10px; background: #ffffff; border-bottom: 1px solid #e2e8f0; z-index: 30; flex-shrink: 0;">
+          <div style="display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1;">
+            <span style="display: flex; align-items: center; cursor: pointer; color: #0f172a;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0f172a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+            </span>
+            <div style="width: 32px; height: 32px; border-radius: 9999px; background: #3b82f6; color: #ffffff; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; flex-shrink: 0;">
+              {{ broadcast.channel_connection.display_name|slice:":1"|upper|default:"H" }}
+            </div>
+            <div style="min-width: 0; flex: 1;">
+              <div style="font-size: 12px; font-weight: 700; color: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.2;">
+                {{ broadcast.channel_connection.display_name|default:"@Hshwhehebot" }}
+              </div>
+              <div style="font-size: 10px; color: #64748b; line-height: 1;">Online</div>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px; color: #0f172a; flex-shrink: 0;">
+            <span style="cursor: pointer; display: flex; align-items: center;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+            </span>
+            <span style="cursor: pointer; display: flex; align-items: center;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+            </span>
+            <span style="cursor: pointer; display: flex; align-items: center;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="#0f172a"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
+            </span>
+          </div>
+        </div>
+
+        {# Chat Messages Body #}
+        <div style="flex: 1 1 0%; min-height: 0; overflow-y: auto; padding: 14px 10px; display: flex; flex-direction: column; gap: 8px; background-color: #efeae2; background-image: radial-gradient(#d3c8ba 0.8px, transparent 0.8px); background-size: 15px 15px;">
+          
+          {# Date separator pill #}
+          <div style="align-self: center; background: #e1dad2; color: #54656f; font-size: 9px; font-weight: 600; padding: 2px 8px; border-radius: 9999px; margin-bottom: 4px;">
+            TODAY
+          </div>
+
+          {# Sent Message Bubble #}
+          <div style="align-self: flex-end; max-width: 86%; background: #d9fdd3; color: #111b21; border-radius: 10px 10px 2px 10px; padding: 8px 10px; box-shadow: 0 1px 1.5px rgba(0,0,0,0.12); position: relative; font-size: 12.5px; word-break: break-word; line-height: 1.45;">
+            
+            {# Render all blocks in sequence #}
+            <template x-for="(block, bIdx) in blocks" :key="bIdx">
+              <div style="margin-bottom: 6px;">
+                
+                {# Text Block #}
+                <template x-if="block.type === 'text'">
+                  <div style="line-height: 1.45;" x-html="formatTextPreview(block.text)"></div>
+                </template>
+
+                {# Image Block #}
+                <template x-if="block.type === 'image' && block.preview_url">
+                  <div>
+                    <img :src="block.preview_url" style="width: 100%; border-radius: 6px; max-height: 160px; object-fit: cover;">
+                    <template x-if="block.caption">
+                      <div style="font-size: 11px; margin-top: 4px;" x-text="block.caption"></div>
+                    </template>
+                  </div>
+                </template>
+
+                {# Video Block #}
+                <template x-if="block.type === 'video' && block.preview_url">
+                  <div>
+                    <video :src="block.preview_url" controls style="width: 100%; border-radius: 6px; max-height: 140px; background: #000;"></video>
+                    <template x-if="block.caption">
+                      <div style="font-size: 11px; margin-top: 4px;" x-text="block.caption"></div>
+                    </template>
+                  </div>
+                </template>
+
+                {# Audio Block #}
+                <template x-if="block.type === 'audio' && block.preview_url">
+                  <div style="display: flex; align-items: center; gap: 8px; padding: 4px 6px; background: rgba(0,0,0,0.04); border-radius: 6px;">
+                    <span style="display: flex; align-items: center; color: #00a884;">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="#00a884"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                    </span>
+                    <div style="flex: 1; height: 4px; background: #cbd5e1; border-radius: 2px;"></div>
+                    <span style="font-size: 10px; color: #64748b;">0:30</span>
+                  </div>
+                </template>
+
+                {# File Block #}
+                <template x-if="block.type === 'file' && block.preview_url">
+                  <div style="display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: rgba(0,0,0,0.04); border-radius: 6px;">
+                    <span style="color: #64748b; display: flex; align-items: center;">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                    </span>
+                    <div style="flex: 1; min-width: 0;">
+                      <div style="font-size: 11px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" x-text="block.filename || 'Document.pdf'"></div>
+                      <div style="font-size: 9px; color: #64748b;" x-text="block.filesizeFormatted || 'Attachment'"></div>
+                    </div>
+                  </div>
+                </template>
+
+              </div>
+            </template>
+
+            {# Timestamp and checkmarks #}
+            <div style="display: flex; align-items: center; justify-content: flex-end; gap: 3px; font-size: 9.5px; color: #667781; margin-top: 3px;">
+              <span x-text="previewTime">9:41 AM</span>
+              <span style="display: flex; align-items: center;">
+                <svg width="16" height="11" viewBox="0 0 16 11" fill="none"><path d="M1 5.5L4.5 9L11.5 2" stroke="#34b7f1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 5.5L8.5 9L15.5 2" stroke="#34b7f1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </span>
+            </div>
+          </div>
+
+          {# Interactive Buttons beneath bubble #}
+          <template x-if="buttons.length > 0">
+            <div style="align-self: flex-end; width: 86%; display: flex; flex-direction: column; gap: 4px; margin-top: -4px;">
+              <template x-for="(btn, bIdx) in buttons" :key="bIdx">
+                <button type="button" @click="simulateButtonClick(btn)"
+                        style="width: 100%; background: #ffffff; color: #00a884; font-size: 12px; font-weight: 600; text-align: center; padding: 8px 10px; border-radius: 8px; border: none; box-shadow: 0 1px 1px rgba(0,0,0,0.08); display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; transition: background 0.15s;"
+                        onmouseover="this.style.background='#f0fdf4'" onmouseout="this.style.background='#ffffff'">
+                  
+                  {# Call icon #}
+                  <span x-show="btn.action === 'call'" style="display: inline-flex; align-items: center;">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#00a884" stroke-width="2.2" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                  </span>
+                  
+                  {# URL icon #}
+                  <span x-show="btn.action === 'url'" style="display: inline-flex; align-items: center;">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#00a884" stroke-width="2.2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                  </span>
+                  
+                  {# Copy Code icon #}
+                  <span x-show="btn.action === 'copy_code'" style="display: inline-flex; align-items: center;">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#00a884" stroke-width="2.2" stroke-linecap="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  </span>
+
+                  {# Flow icon #}
+                  <span x-show="btn.action === 'flow'" style="display: inline-flex; align-items: center;">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#00a884" stroke-width="2.2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                  </span>
+
+                  {# Quick Reply icon #}
+                  <span x-show="btn.action === 'postback'" style="display: inline-flex; align-items: center;">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#00a884" stroke-width="2.2" stroke-linecap="round"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>
+                  </span>
+
+                  <span x-text="btn.label || 'Action Button'"></span>
+                </button>
+              </template>
+            </div>
+          </template>
+
+          {# Simulated Toast Alert inside Phone Simulator #}
+          <div x-show="simulatedToast" x-transition.opacity
+               style="position: sticky; bottom: 8px; align-self: center; background: #1e293b; color: #ffffff; padding: 6px 14px; border-radius: 9999px; font-size: 11px; font-weight: 600; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3); z-index: 50; display: flex; align-items: center; gap: 6px;"
+               x-text="simulatedToast"></div>
+
+        </div>
+
+        {# Bottom Phone Input Bar #}
+        <div style="height: 48px; min-height: 48px; display: flex; align-items: center; gap: 6px; padding: 0 8px; background: #f0f2f5; border-top: 1px solid #e2e8f0; z-index: 20; flex-shrink: 0;">
+          <span style="color: #54656f; cursor: pointer; display: flex; align-items: center;">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#54656f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><circle cx="9" cy="9" r="1" fill="#54656f"/><circle cx="15" cy="9" r="1" fill="#54656f"/></svg>
+          </span>
+          <div style="flex: 1; height: 32px; background: #ffffff; border-radius: 9999px; padding: 0 10px; font-size: 11px; color: #8696a0; display: flex; align-items: center;">Message</div>
+          <span style="color: #54656f; cursor: pointer; display: flex; align-items: center;">
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#54656f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+          </span>
+          <span style="color: #54656f; cursor: pointer; display: flex; align-items: center;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#54656f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+          </span>
+          <div style="width: 30px; height: 30px; border-radius: 9999px; background: #00a884; color: #ffffff; display: flex; align-items: center; justify-content: center; flex-shrink: 0; cursor: pointer;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+          </div>
+        </div>
+
+        {# Home Indicator Bar Chin #}
+        <div style="height: 12px; min-height: 12px; background: #ffffff; display: flex; align-items: center; justify-content: center; z-index: 20; flex-shrink: 0;">
+          <div style="width: 90px; height: 3px; background: #000000; border-radius: 9999px;"></div>
+        </div>
+
+      </div>
+
+    </aside>
+
+  </div>
+
+  {# ══════════════════════════════════════════════════════════════ #}
+  {# MODALS                                                         #}
+  {# ══════════════════════════════════════════════════════════════ #}
+
+  {# ── MODAL 1: Media Library Modal ── #}
+  <div x-show="showMediaLibraryModal" x-transition.opacity style="position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);">
+    <div style="background: #ffffff; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); border: 1px solid #e2e8f0; width: 100%; max-width: 720px; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden;"
+         @click.away="showMediaLibraryModal = false">
+      <div style="padding: 14px 20px; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; background: #f8fafc;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="color: #4338ca; display: flex; align-items: center;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4338ca" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          </span>
+          <div>
+            <h3 style="font-size: 14px; font-weight: 700; color: #1e293b; margin: 0;">Workspace Media Library</h3>
+            <p style="font-size: 11px; color: #64748b; margin: 0;">Select an existing asset or upload a new one.</p>
+          </div>
+        </div>
+        <button type="button" @click="showMediaLibraryModal = false" style="background: transparent; border: none; font-size: 20px; color: #94a3b8; cursor: pointer;">&times;</button>
+      </div>
+
+      <div style="padding: 10px 16px; border-bottom: 1px solid #e2e8f0; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; background: #ffffff;">
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <input type="text" x-model="mediaLibraryQuery" @input.debounce.250ms="filterMediaLibrary()" placeholder="Search media by name..." class="form-input-styled" style="width: 200px; font-size: 12px; padding: 5px 10px;">
+          <select x-model="mediaLibraryKind" @change="filterMediaLibrary()" class="bb-filter-select" style="font-size: 12px; padding: 5px 8px;">
+            <option value="">All Kinds</option>
+            <option value="image">Images</option>
+            <option value="video">Videos</option>
+            <option value="audio">Audio</option>
+            <option value="file">Documents</option>
+          </select>
+        </div>
+        <label style="display: inline-flex; align-items: center; gap: 5px; padding: 5px 12px; font-size: 12px; font-weight: 600; color: #ffffff; background: #4f46e5; border-radius: 6px; cursor: pointer;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <span>Upload to Library</span>
+          <input type="file" style="display: none;" @change="uploadNewToLibrary($event)">
+        </label>
+      </div>
+
+      <div style="padding: 16px; overflow-y: auto; flex: 1; min-height: 280px;">
+        <div x-show="mediaLibraryLoading" style="padding: 40px; text-align: center; color: #94a3b8; font-size: 13px;">Loading assets...</div>
+        <div x-show="!mediaLibraryLoading && !mediaLibraryItems.length" style="padding: 40px; text-align: center; color: #94a3b8; font-size: 13px;">No media found. Click "Upload to Library" above to add new files.</div>
+        <div x-show="!mediaLibraryLoading && mediaLibraryItems.length" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px;">
+          <template x-for="item in mediaLibraryItems" :key="item.id">
+            <div style="border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden; background: #ffffff; display: flex; flex-direction: column; cursor: pointer; transition: all 0.15s;"
+                 @click="selectMediaAsset(item)">
+              <div style="height: 85px; background: #f1f5f9; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+                <template x-if="item.kind === 'image' && item.url">
+                  <img :src="item.url" style="width: 100%; height: 100%; object-fit: cover;">
+                </template>
+                <span x-show="item.kind === 'video'" style="display: flex; align-items: center;">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#0284c7" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+                </span>
+                <span x-show="item.kind === 'audio'" style="display: flex; align-items: center;">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                </span>
+                <span x-show="item.kind === 'file'" style="display: flex; align-items: center;">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#d97706" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                </span>
+              </div>
+              <div style="padding: 6px 8px;">
+                <p style="font-size: 11px; font-weight: 600; color: #1e293b; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" x-text="item.filename || 'Asset'"></p>
+                <div style="display: flex; justify-content: space-between; font-size: 9px; color: #94a3b8; margin-top: 2px;">
+                  <span style="text-transform: uppercase;" x-text="item.kind"></span>
+                  <span x-text="formatFileSize(item.size)"></span>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <div style="padding: 10px 20px; border-top: 1px solid #e2e8f0; display: flex; justify-content: flex-end; background: #f8fafc;">
+        <button type="button" @click="showMediaLibraryModal = false" class="btn-outline" style="font-size: 12px; padding: 4px 12px;">Close</button>
+      </div>
+    </div>
+  </div>
+
+  {# ── MODAL 2: Real In-Browser Canvas Image Editor ── #}
+  <div x-show="showImageEditorModal" x-transition.opacity style="position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(0,0,0,0.75); backdrop-filter: blur(4px);">
+    <div style="background: #ffffff; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.3); border: 1px solid #e2e8f0; width: 100%; max-width: 800px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden;"
+         @click.away="showImageEditorModal = false">
+      <div style="padding: 12px 18px; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; background: #f8fafc;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="color: #4338ca; display: flex; align-items: center;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4338ca" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>
+          </span>
+          <div>
+            <h3 style="font-size: 14px; font-weight: 700; color: #1e293b; margin: 0;">Image Editor</h3>
+            <p style="font-size: 11px; color: #64748b; margin: 0;">Crop, rotate, flip, and resize losslessly.</p>
+          </div>
+        </div>
+        <button type="button" @click="showImageEditorModal = false" style="background: transparent; border: none; font-size: 20px; color: #94a3b8; cursor: pointer;">&times;</button>
+      </div>
+
+      <div style="padding: 16px; flex: 1; overflow-y: auto; display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: center; background: #f1f5f9;">
+        <div style="flex: 1; min-width: 280px; display: flex; align-items: center; justify-content: center; padding: 10px; background: rgba(0,0,0,0.04); border-radius: 12px; min-height: 300px;">
+          <canvas id="image-editor-canvas" style="border-radius: 8px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); max-width: 100%; max-height: 340px; background: #ffffff;"></canvas>
+        </div>
+
+        <div style="width: 220px; display: flex; flex-direction: column; gap: 12px; background: #ffffff; padding: 14px; border-radius: 10px; border: 1px solid #e2e8f0;">
+          <div>
+            <label style="font-size: 11px; font-weight: 700; color: #334155; display: block; margin-bottom: 6px;">Aspect Ratio:</label>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px;">
+              <button type="button" @click="setAspectRatio('free')"
+                      style="padding: 4px; font-size: 11px; border-radius: 4px; border: 1px solid #cbd5e1; cursor: pointer;"
+                      :style="editingImage.aspectRatio === 'free' ? 'background: #4f46e5; color: #ffffff;' : 'background: #f8fafc; color: #334155;'">Free</button>
+              <button type="button" @click="setAspectRatio('1:1')"
+                      style="padding: 4px; font-size: 11px; border-radius: 4px; border: 1px solid #cbd5e1; cursor: pointer;"
+                      :style="editingImage.aspectRatio === '1:1' ? 'background: #4f46e5; color: #ffffff;' : 'background: #f8fafc; color: #334155;'">1:1 Square</button>
+              <button type="button" @click="setAspectRatio('4:5')"
+                      style="padding: 4px; font-size: 11px; border-radius: 4px; border: 1px solid #cbd5e1; cursor: pointer;"
+                      :style="editingImage.aspectRatio === '4:5' ? 'background: #4f46e5; color: #ffffff;' : 'background: #f8fafc; color: #334155;'">4:5 Story</button>
+              <button type="button" @click="setAspectRatio('16:9')"
+                      style="padding: 4px; font-size: 11px; border-radius: 4px; border: 1px solid #cbd5e1; cursor: pointer;"
+                      :style="editingImage.aspectRatio === '16:9' ? 'background: #4f46e5; color: #ffffff;' : 'background: #f8fafc; color: #334155;'">16:9 Banner</button>
+            </div>
+          </div>
+
+          <div>
+            <label style="font-size: 11px; font-weight: 700; color: #334155; display: block; margin-bottom: 6px;">Transform:</label>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px;">
+              <button type="button" @click="rotateImage(-90)" style="display: inline-flex; align-items: center; justify-content: center; gap: 3px; padding: 4px; font-size: 11px; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer;">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><polyline points="3 3 3 8 8 8"/></svg>
+                <span>-90°</span>
+              </button>
+              <button type="button" @click="rotateImage(90)" style="display: inline-flex; align-items: center; justify-content: center; gap: 3px; padding: 4px; font-size: 11px; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer;">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2"><path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><polyline points="21 3 21 8 16 8"/></svg>
+                <span>+90°</span>
+              </button>
+              <button type="button" @click="toggleFlipH()" style="display: inline-flex; align-items: center; justify-content: center; gap: 3px; padding: 4px; font-size: 11px; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer;">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2"><polyline points="17 11 21 7 17 3"/><line x1="21" y1="7" x2="9" y2="7"/><polyline points="7 21 3 17 7 13"/><line x1="3" y1="17" x2="15" y2="17"/></svg>
+                <span>Flip H</span>
+              </button>
+              <button type="button" @click="toggleFlipV()" style="display: inline-flex; align-items: center; justify-content: center; gap: 3px; padding: 4px; font-size: 11px; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer;">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2"><polyline points="7 17 3 21 3 17"/><line x1="7" y1="21" x2="7" y2="9"/><polyline points="17 7 21 3 17 3"/><line x1="17" y1="3" x2="17" y2="15"/></svg>
+                <span>Flip V</span>
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <div style="display: flex; justify-content: space-between; font-size: 11px; font-weight: 700; color: #334155; margin-bottom: 4px;">
+              <span>Zoom:</span>
+              <span x-text="`${Math.round(editingImage.zoom * 100)}%`"></span>
+            </div>
+            <input type="range" min="0.5" max="2.0" step="0.05" x-model="editingImage.zoom" @input="renderEditorCanvas()" style="width: 100%;">
+          </div>
+
+          <button type="button" @click="editingImage.zoom = 1; editingImage.rotation = 0; editingImage.flipH = 1; editingImage.flipV = 1; editingImage.aspectRatio = 'free'; renderEditorCanvas();"
+                  style="padding: 4px; font-size: 11px; color: #64748b; background: transparent; border: none; cursor: pointer; text-align: center;">
+            Reset Edits
+          </button>
+        </div>
+      </div>
+
+      <div style="padding: 10px 18px; border-top: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; background: #f8fafc;">
+        <button type="button" @click="showImageEditorModal = false" class="btn-outline" style="font-size: 12px; padding: 5px 12px;">Cancel</button>
+        <button type="button" @click="applyImageEdits()" class="btn-pill-primary" style="display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 5px 16px;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          <span>Save & Apply</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  {# ── MODAL 3: Searchable Variable Picker ── #}
+  <div x-show="showVariableModal" x-transition.opacity style="position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(0,0,0,0.5); backdrop-filter: blur(2px);">
+    <div style="background: #ffffff; border-radius: 12px; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.2); border: 1px solid #e2e8f0; width: 100%; max-width: 380px; overflow: hidden;"
+         @click.away="showVariableModal = false">
+      <div style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; background: #f8fafc;">
+        <span style="font-size: 12px; font-weight: 700; color: #1e293b;">Insert Variable</span>
+        <button type="button" @click="showVariableModal = false" style="border: none; background: transparent; font-size: 18px; color: #94a3b8; cursor: pointer;">&times;</button>
+      </div>
+      <div style="padding: 8px 12px; border-bottom: 1px solid #f1f5f9;">
+        <input type="text" x-model="variableSearchQuery" placeholder="Search variables..." class="form-input-styled" style="font-size: 11px; padding: 4px 8px; width: 100%; box-sizing: border-box;">
+      </div>
+      <div style="max-height: 220px; overflow-y: auto; padding: 6px;">
+        <template x-for="v in availableVariables.filter(item => !variableSearchQuery || item.token.toLowerCase().includes(variableSearchQuery.toLowerCase()) || item.label.toLowerCase().includes(variableSearchQuery.toLowerCase()))" :key="v.token">
+          <button type="button" @click="insertVariable(v.token)"
+                  style="width: 100%; text-align: left; padding: 6px 8px; border-radius: 6px; border: none; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: space-between;">
+            <div>
+              <p style="margin: 0; font-size: 11px; font-family: monospace; font-weight: 700; color: #4338ca;" x-text="v.token"></p>
+              <p style="margin: 0; font-size: 10px; color: #64748b;" x-text="v.desc"></p>
+            </div>
+            <span style="font-size: 9px; background: #f1f5f9; color: #475569; padding: 1px 5px; border-radius: 4px;" x-text="v.example"></span>
+          </button>
         </template>
       </div>
     </div>
+  </div>
 
-    <div class="wizard-actions">
-      {% include "broadcasts/_step_back.html" %}
-      <button type="submit" class="btn-pill-primary">Continue</button>
+  {# ── MODAL 4: Fullscreen Live Phone Simulator ── #}
+  <div x-show="showFullscreenSimulator" x-transition.opacity style="position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(0,0,0,0.8); backdrop-filter: blur(5px);">
+    <div style="background: transparent; position: relative; display: flex; flex-direction: column; align-items: center;"
+         @click.away="showFullscreenSimulator = false">
+      <button type="button" @click="showFullscreenSimulator = false" style="align-self: flex-end; margin-bottom: 10px; background: rgba(255,255,255,0.2); border: none; color: #ffffff; padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; display: inline-flex; align-items: center; gap: 6px;">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width: 14px; height: 14px; display: block;"><path d="M18 6L6 18M6 6l12 12"></path></svg>
+        <span>Close Fullscreen</span>
+      </button>
+      
+      {# Large Phone Frame in Fullscreen #}
+      <div style="width: 360px; max-width: 100%; height: 720px; background: #000000; border: 8px solid #1e293b; border-radius: 46px; box-shadow: 0 25px 50px rgba(0,0,0,0.5); overflow: hidden; position: relative; display: flex; flex-direction: column;">
+        
+        {# Top Dynamic Island Notch #}
+        <div style="position: absolute; top: 8px; left: 50%; transform: translateX(-50%); width: 88px; height: 20px; background: #000000; border-radius: 9999px; z-index: 50; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px;">
+          <div style="width: 8px; height: 8px; border-radius: 9999px; background: #111827; border: 1px solid #1f2937;"></div>
+        </div>
+
+        {# Status bar #}
+        <div style="height: 36px; min-height: 36px; display: flex; align-items: center; justify-content: space-between; padding: 6px 20px 0; font-size: 11px; font-weight: 700; color: #000000; background: #ffffff; z-index: 40; flex-shrink: 0;">
+          <span>9:41</span>
+          <div style="display: flex; align-items: center; gap: 5px;">
+            <svg width="14" height="11" viewBox="0 0 17 12" fill="#000000"><rect x="0" y="9" width="2.5" height="3" rx="0.5"/><rect x="4.5" y="6" width="2.5" height="6" rx="0.5"/><rect x="9" y="3" width="2.5" height="9" rx="0.5"/><rect x="13.5" y="0" width="2.5" height="12" rx="0.5"/></svg>
+            <svg width="14" height="11" viewBox="0 0 24 24" fill="none" stroke="#000000" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20" stroke-width="3"/></svg>
+            <svg width="20" height="10" viewBox="0 0 25 12" fill="none" stroke="#000000" stroke-width="1.3" stroke-linecap="round"><rect x="1" y="1" width="20" height="10" rx="2.5"/><rect x="3" y="3" width="13" height="6" rx="1" fill="#000000"/><path d="M23 4.5v3"/></svg>
+          </div>
+        </div>
+
+        {# Chat Header #}
+        <div style="height: 52px; min-height: 52px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; background: #ffffff; border-bottom: 1px solid #e2e8f0; z-index: 30; flex-shrink: 0;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div style="width: 34px; height: 34px; border-radius: 9999px; background: #3b82f6; color: #ffffff; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700;">
+              {{ broadcast.channel_connection.display_name|slice:":1"|upper|default:"H" }}
+            </div>
+            <div>
+              <div style="font-size: 13px; font-weight: 700; color: #0f172a;">{{ broadcast.channel_connection.display_name|default:"@Hshwhehebot" }}</div>
+              <div style="font-size: 10px; color: #64748b;">Online</div>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px; color: #0f172a;">
+            <span style="cursor: pointer; display: flex; align-items: center;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+            </span>
+            <span style="cursor: pointer; display: flex; align-items: center;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+            </span>
+            <span style="cursor: pointer; display: flex; align-items: center;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="#0f172a"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
+            </span>
+          </div>
+        </div>
+
+        {# Chat Body #}
+        <div style="flex: 1 1 0%; min-height: 0; overflow-y: auto; padding: 16px 12px; display: flex; flex-direction: column; gap: 8px; background-color: #efeae2; background-image: radial-gradient(#d3c8ba 0.8px, transparent 0.8px); background-size: 15px 15px;">
+          <div style="align-self: flex-end; max-width: 86%; background: #d9fdd3; color: #111b21; border-radius: 10px 10px 2px 10px; padding: 10px 12px; box-shadow: 0 1px 1.5px rgba(0,0,0,0.12); font-size: 13px; line-height: 1.45;">
+            <div x-html="formattedPreviewHtml"></div>
+            <div style="display: flex; align-items: center; justify-content: flex-end; gap: 3px; font-size: 9.5px; color: #667781; margin-top: 4px;">
+              <span x-text="previewTime">9:41 AM</span>
+              <span style="display: flex; align-items: center;">
+                <svg width="16" height="11" viewBox="0 0 16 11" fill="none"><path d="M1 5.5L4.5 9L11.5 2" stroke="#34b7f1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 5.5L8.5 9L15.5 2" stroke="#34b7f1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </span>
+            </div>
+          </div>
+
+          {# Interactive Buttons in Fullscreen #}
+          <template x-if="buttons.length > 0">
+            <div style="align-self: flex-end; width: 86%; display: flex; flex-direction: column; gap: 4px; margin-top: -4px;">
+              <template x-for="(btn, bIdx) in buttons" :key="bIdx">
+                <button type="button" @click="simulateButtonClick(btn)"
+                        style="width: 100%; background: #ffffff; color: #00a884; font-size: 13px; font-weight: 600; text-align: center; padding: 9px 12px; border-radius: 8px; border: none; box-shadow: 0 1px 1px rgba(0,0,0,0.08); display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer;">
+                  <span x-show="btn.action === 'call'" style="display: inline-flex; align-items: center;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#00a884" stroke-width="2.2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                  </span>
+                  <span x-show="btn.action === 'url'" style="display: inline-flex; align-items: center;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#00a884" stroke-width="2.2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                  </span>
+                  <span x-show="btn.action === 'copy_code'" style="display: inline-flex; align-items: center;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#00a884" stroke-width="2.2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  </span>
+                  <span x-show="btn.action === 'flow'" style="display: inline-flex; align-items: center;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#00a884" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                  </span>
+                  <span x-show="btn.action === 'postback'" style="display: inline-flex; align-items: center;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#00a884" stroke-width="2.2"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>
+                  </span>
+                  <span x-text="btn.label || 'Action Button'"></span>
+                </button>
+              </template>
+            </div>
+          </template>
+
+          <div x-show="simulatedToast" x-transition.opacity
+               style="position: sticky; bottom: 12px; align-self: center; background: #1e293b; color: #ffffff; padding: 7px 16px; border-radius: 9999px; font-size: 12px; font-weight: 600; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3); z-index: 50;"
+               x-text="simulatedToast"></div>
+        </div>
+      </div>
     </div>
-  </form>
-</div>
+  </div>
 
+</div>

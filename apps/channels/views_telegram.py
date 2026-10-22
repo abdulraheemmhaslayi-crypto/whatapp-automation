@@ -109,7 +109,7 @@ def telegram_connect(request: WorkspaceRequest, workspace_id: str) -> HttpRespon
             # The URL the connect actually configures, not one derived from
             # this request — so what the page promises and what Telegram is told
             # cannot disagree on a deployment behind a proxy.
-            "webhook_url": telegram.webhook_url(),
+            "webhook_url": telegram.webhook_url(request),
             "list_url": reverse("channels:list", kwargs={"workspace_id": workspace_id}),
         },
     )
@@ -175,9 +175,9 @@ def _connect(request: WorkspaceRequest, token: str) -> str:
     # which is recoverable; a wedged pool is not.
     try:
         # drop_pending only here: this bot's backlog predates the workspace.
-        telegram.set_webhook(token, url=telegram.webhook_url(), secret_token=secret, drop_pending=True)
-    except APIError:
-        logger.info("Telegram connect: setWebhook failed for workspace %s.", request.workspace.pk)
+        telegram.set_webhook(token, url=telegram.webhook_url(request), secret_token=secret, drop_pending=True)
+    except APIError as exc:
+        logger.warning("Telegram connect: setWebhook failed for workspace %s: %s", request.workspace.pk, exc)
         connection.delete()
         return WEBHOOK_FAILED
 

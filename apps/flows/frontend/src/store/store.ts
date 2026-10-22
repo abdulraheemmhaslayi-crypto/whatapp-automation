@@ -122,6 +122,7 @@ export interface BuilderState extends GraphState {
   beginDrag: () => void;
   endDrag: () => void;
   deleteNodes: (ids: string[]) => void;
+  duplicateNode: (id: string) => string | null;
   deleteEdges: (ids: string[]) => void;
   connect: (source: string, sourceHandle: string, target: string) => void;
   /**
@@ -411,6 +412,31 @@ export function createBuilderStore(env: BuilderEnv) {
               selection: { nodes: [], edges: [] },
             };
           });
+        },
+
+        duplicateNode: (id) => {
+          const state = get();
+          if (state.nodeOrder.length >= state.limits.max_nodes) {
+            return null;
+          }
+          const type = state.nodeType[id];
+          const config = state.config[id];
+          const pos = state.position[id] ?? { x: 100, y: 100 };
+          if (!type || config === undefined) {
+            return null;
+          }
+          const handleMap = new Map<string, string>();
+          const newId = newNodeId();
+          const newConfig = remintItemIds({ id, type, config, position: pos }, handleMap);
+          const at = freePositionNear({ x: pos.x + 40, y: pos.y + 40 }, Object.values(state.position));
+          withHistory(`duplicate:${newId}`, (before) => ({
+            nodeOrder: [...before.nodeOrder, newId],
+            nodeType: { ...before.nodeType, [newId]: type },
+            config: { ...before.config, [newId]: newConfig },
+            position: { ...before.position, [newId]: sanitizePosition(at) },
+            selection: { nodes: [newId], edges: [] },
+          }));
+          return newId;
         },
 
         deleteEdges: (ids) => {
